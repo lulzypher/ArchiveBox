@@ -232,6 +232,8 @@ Examples:
 archivebox archiveteam register --username alice --country US
 archivebox archiveteam profile --public-key AT... --bio "node runner"
 archivebox archiveteam request --public-key AT... --url https://example.com --mode FULL_WARC
+archivebox archiveteam request --public-key AT... --url https://youtube.com/watch?v=... --mode MEDIA_YTDLP --download-profile media_fast --video-quality 1080p --max-retries 4
+archivebox archiveteam request --public-key AT... --url https://instagram.com/p/... --mode GALLERY_DL --download-profile gallery_deep --gallery-max-items 250
 archivebox archiveteam claim --public-key AT...
 archivebox archiveteam fulfill --public-key AT... --request-id <id> --content-hash <sha256> --storage-uri ipfs://...
 archivebox archiveteam collection-create --owner-public-key AT... --name "Research"

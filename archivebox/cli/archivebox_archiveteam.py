@@ -50,8 +50,25 @@ def main(args: Optional[List[str]] = None, stdin: Optional[IO] = None, pwd: Opti
     submit = subparsers.add_parser('request', help='Submit archive request.')
     submit.add_argument('--public-key', required=True)
     submit.add_argument('--url', required=True)
-    submit.add_argument('--mode', choices=(ArchiveMode.FULL_WARC.value, ArchiveMode.ZIP_WARC.value), default=ArchiveMode.FULL_WARC.value)
+    submit.add_argument(
+        '--mode',
+        choices=tuple(mode.value for mode in ArchiveMode),
+        default=ArchiveMode.FULL_WARC.value,
+    )
     submit.add_argument('--country-preference', default='')
+    submit.add_argument('--download-profile', default='balanced')
+    submit.add_argument('--video-quality', default='')
+    submit.add_argument('--audio-only', choices=('true', 'false'))
+    submit.add_argument('--include-subtitles', choices=('true', 'false'))
+    submit.add_argument('--include-thumbnail', choices=('true', 'false'))
+    submit.add_argument('--playlist', choices=('true', 'false'))
+    submit.add_argument('--format', default='')
+    submit.add_argument('--gallery-max-items', type=int)
+    submit.add_argument('--cookies-from-browser', default='')
+    submit.add_argument('--max-retries', type=int)
+    submit.add_argument('--retry-backoff-seconds', type=int)
+    submit.add_argument('--sleep-interval-seconds', type=int)
+    submit.add_argument('--max-concurrent-downloads', type=int)
 
     list_open = subparsers.add_parser('list-open', help='List currently open requests.')
     list_open.add_argument('--worker-public-key', default='')
@@ -152,11 +169,42 @@ def main(args: Optional[List[str]] = None, stdin: Optional[IO] = None, pwd: Opti
         return
 
     if command.action == 'request':
+        profile_options = {}
+        worker_controls = {}
+        if command.video_quality:
+            profile_options['video_quality'] = command.video_quality
+        if command.audio_only is not None:
+            profile_options['audio_only'] = command.audio_only == 'true'
+        if command.include_subtitles is not None:
+            profile_options['include_subtitles'] = command.include_subtitles == 'true'
+        if command.include_thumbnail is not None:
+            profile_options['include_thumbnail'] = command.include_thumbnail == 'true'
+        if command.playlist is not None:
+            profile_options['playlist'] = command.playlist == 'true'
+        if command.format:
+            profile_options['format'] = command.format
+        if command.gallery_max_items is not None:
+            profile_options['gallery_max_items'] = command.gallery_max_items
+        if command.cookies_from_browser:
+            profile_options['cookies_from_browser'] = command.cookies_from_browser
+
+        if command.max_retries is not None:
+            worker_controls['max_retries'] = command.max_retries
+        if command.retry_backoff_seconds is not None:
+            worker_controls['retry_backoff_seconds'] = command.retry_backoff_seconds
+        if command.sleep_interval_seconds is not None:
+            worker_controls['sleep_interval_seconds'] = command.sleep_interval_seconds
+        if command.max_concurrent_downloads is not None:
+            worker_controls['max_concurrent_downloads'] = command.max_concurrent_downloads
+
         request = network.submit_request(
             requester_public_key=command.public_key,
             url=command.url,
             archive_mode=command.mode,
             country_preference=command.country_preference,
+            download_profile=command.download_profile,
+            profile_options=profile_options or None,
+            worker_controls=worker_controls or None,
         )
         print(json.dumps(request, indent=2, sort_keys=True))
         return

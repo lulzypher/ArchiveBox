@@ -21,6 +21,8 @@ class ArchiveTeamError(ValueError):
 class ArchiveMode(str, Enum):
     FULL_WARC = "FULL_WARC"
     ZIP_WARC = "ZIP_WARC"
+    MEDIA_YTDLP = "MEDIA_YTDLP"
+    GALLERY_DL = "GALLERY_DL"
 
 
 class RatioBand(str, Enum):
@@ -44,6 +46,106 @@ class ArchiveTeamNetwork:
         "minor-sex",
     )
     DEFAULT_BLOCKED_HOSTS = ()
+    DEFAULT_RESTRICTED_DRM_HOSTS = (
+        "netflix.com",
+        "primevideo.com",
+        "disneyplus.com",
+        "hulu.com",
+        "max.com",
+        "hbomax.com",
+        "tv.apple.com",
+        "paramountplus.com",
+        "peacocktv.com",
+    )
+    DEFAULT_AUTH_GATED_HOSTS = (
+        "coursera.org",
+        "edx.org",
+        "udemy.com",
+    )
+    DEFAULT_WORKER_CONTROLS = {
+        "max_retries": 3,
+        "retry_backoff_seconds": 30,
+        "sleep_interval_seconds": 0,
+        "max_concurrent_downloads": 2,
+    }
+    DOWNLOAD_PROFILES = {
+        "balanced": {
+            "allowed_modes": [
+                ArchiveMode.FULL_WARC.value,
+                ArchiveMode.ZIP_WARC.value,
+                ArchiveMode.MEDIA_YTDLP.value,
+                ArchiveMode.GALLERY_DL.value,
+            ],
+            "defaults": {
+                "video_quality": "best",
+                "audio_only": False,
+                "include_subtitles": False,
+                "include_thumbnail": True,
+                "playlist": False,
+                "format": "",
+                "gallery_max_items": 0,
+                "cookies_from_browser": "",
+            },
+        },
+        "forensic": {
+            "allowed_modes": [
+                ArchiveMode.FULL_WARC.value,
+                ArchiveMode.ZIP_WARC.value,
+            ],
+            "defaults": {
+                "video_quality": "best",
+                "audio_only": False,
+                "include_subtitles": True,
+                "include_thumbnail": True,
+                "playlist": False,
+                "format": "",
+                "gallery_max_items": 0,
+                "cookies_from_browser": "",
+            },
+        },
+        "media_fast": {
+            "allowed_modes": [ArchiveMode.MEDIA_YTDLP.value],
+            "defaults": {
+                "video_quality": "1080p",
+                "audio_only": False,
+                "include_subtitles": False,
+                "include_thumbnail": True,
+                "playlist": False,
+                "format": "mp4",
+                "gallery_max_items": 0,
+                "cookies_from_browser": "",
+            },
+        },
+        "audio_only": {
+            "allowed_modes": [ArchiveMode.MEDIA_YTDLP.value],
+            "defaults": {
+                "video_quality": "best",
+                "audio_only": True,
+                "include_subtitles": False,
+                "include_thumbnail": False,
+                "playlist": False,
+                "format": "mp3",
+                "gallery_max_items": 0,
+                "cookies_from_browser": "",
+            },
+        },
+        "gallery_deep": {
+            "allowed_modes": [ArchiveMode.GALLERY_DL.value],
+            "defaults": {
+                "video_quality": "best",
+                "audio_only": False,
+                "include_subtitles": False,
+                "include_thumbnail": False,
+                "playlist": True,
+                "format": "",
+                "gallery_max_items": 500,
+                "cookies_from_browser": "",
+            },
+        },
+    }
+    ALLOWED_VIDEO_QUALITIES = {"best", "high", "medium", "low", "2160p", "1440p", "1080p", "720p", "480p", "360p"}
+    ALLOWED_MEDIA_FORMATS = {"", "mp4", "mkv", "webm", "mp3", "m4a", "opus", "wav", "flac"}
+    ALLOWED_COOKIE_BROWSERS = {"", "firefox", "chrome", "safari", "edge", "chromium", "brave", "opera", "vivaldi"}
     DEFAULT_SITE_STATE = {
         "current_cid": "",
         "version": "",
@@ -257,6 +359,9 @@ class ArchiveTeamNetwork:
         url: str,
         archive_mode: str = ArchiveMode.FULL_WARC.value,
         country_preference: str = "",
+        download_profile: str = "",
+        profile_options: Optional[Dict[str, Any]] = None,
+        worker_controls: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         requester_key = self.normalize_public_key(requester_public_key)
         requester = self._require_user(requester_key)
@@ -267,12 +372,24 @@ class ArchiveTeamNetwork:
         self._assert_url_allowed(url)
 
         mode = ArchiveMode(archive_mode)
+        normalized_profile = self._normalize_download_profile(mode, download_profile)
+        normalized_profile_options = self._normalize_profile_options(
+            mode=mode,
+            download_profile=normalized_profile,
+            profile_options=profile_options or {},
+        )
+        normalized_worker_controls = self._normalize_worker_controls(worker_controls or {})
+        policy_flags = self._build_policy_flags(url)
         request_id = secrets.token_hex(12)
         request_record = {
             "request_id": request_id,
             "requester_public_key": requester_key,
             "url": url.strip(),
             "archive_mode": mode.value,
+            "download_profile": normalized_profile,
+            "profile_options": normalized_profile_options,
+            "worker_controls": normalized_worker_controls,
+            "policy_flags": policy_flags,
             "country_preference": country_preference.strip().upper(),
             "status": "OPEN",
             "claimed_by": "",
@@ -350,6 +467,10 @@ class ArchiveTeamNetwork:
             "request_id": request_id,
             "source_url": request_record["url"],
             "archive_mode": request_record["archive_mode"],
+            "download_profile": request_record.get("download_profile", "balanced"),
+            "profile_options": self._clone(request_record.get("profile_options", {})),
+            "worker_controls": self._clone(request_record.get("worker_controls", self.DEFAULT_WORKER_CONTROLS)),
+            "policy_flags": self._clone(request_record.get("policy_flags", [])),
             "content_hash": content_hash.lower(),
             "storage_uri": storage_uri.strip(),
             "pinned_until": pinned_until.isoformat(),
@@ -381,6 +502,8 @@ class ArchiveTeamNetwork:
                 "worker_public_key": worker_key,
                 "content_hash": content_hash.lower(),
                 "storage_uri": storage_uri.strip(),
+                "archive_mode": request_record["archive_mode"],
+                "download_profile": request_record.get("download_profile", "balanced"),
                 "expires_at": pinned_until.isoformat(),
             }
         )
@@ -1007,6 +1130,18 @@ class ArchiveTeamNetwork:
         user["online"] = self.is_node_online(canonical_key)
         return user
 
+    @classmethod
+    def list_archive_modes(cls) -> List[str]:
+        return [mode.value for mode in ArchiveMode]
+
+    @classmethod
+    def list_download_profiles(cls) -> Dict[str, Dict[str, Any]]:
+        return cls._clone(cls.DOWNLOAD_PROFILES)
+
+    @classmethod
+    def default_worker_controls(cls) -> Dict[str, int]:
+        return cls._clone(cls.DEFAULT_WORKER_CONTROLS)
+
     # -------------------------------------------------------------------------
     # Persistence helpers
     # -------------------------------------------------------------------------
@@ -1045,6 +1180,20 @@ class ArchiveTeamNetwork:
         self.online_nodes = raw.get("online_nodes", {})
         self.login_challenges = raw.get("login_challenges", {})
         self.sessions = raw.get("sessions", {})
+        for request_record in self.requests.values():
+            self._hydrate_request_defaults(request_record)
+        for archive_record in self.archives.values():
+            request_record = self.requests.get(archive_record.get("request_id", ""))
+            if request_record:
+                archive_record.setdefault("download_profile", request_record.get("download_profile", "balanced"))
+                archive_record.setdefault("profile_options", self._clone(request_record.get("profile_options", {})))
+                archive_record.setdefault("worker_controls", self._clone(request_record.get("worker_controls", self.DEFAULT_WORKER_CONTROLS)))
+                archive_record.setdefault("policy_flags", self._clone(request_record.get("policy_flags", [])))
+            else:
+                archive_record.setdefault("download_profile", "balanced")
+                archive_record.setdefault("profile_options", {})
+                archive_record.setdefault("worker_controls", self._clone(self.DEFAULT_WORKER_CONTROLS))
+                archive_record.setdefault("policy_flags", [])
 
     def _append_ledger_entry(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         previous_hash = self.ledger[-1]["tx_hash"] if self.ledger else "GENESIS"
@@ -1078,7 +1227,7 @@ class ArchiveTeamNetwork:
         return now
 
     @staticmethod
-    def _clone(data: Dict[str, Any]) -> Dict[str, Any]:
+    def _clone(data: Any) -> Any:
         return json.loads(json.dumps(data))
 
     def _require_user(self, public_key: str) -> Dict[str, Any]:
@@ -1186,12 +1335,194 @@ class ArchiveTeamNetwork:
         host = (parsed.hostname or "").lower()
         decoded_url = unquote(url).lower()
 
-        if host and host in self.blocked_hosts:
+        if host and any(self._host_matches(host, blocked_host) for blocked_host in self.blocked_hosts):
             raise ArchiveTeamError("URL host is blocked by safety policy.")
+        if host and any(self._host_matches(host, restricted_host) for restricted_host in self.DEFAULT_RESTRICTED_DRM_HOSTS):
+            raise ArchiveTeamError("URL blocked by content policy (DRM/paywalled streaming host).")
 
         for term in self.blocked_url_terms:
             if term in decoded_url:
                 raise ArchiveTeamError("URL blocked by safety policy.")
+
+    def _build_policy_flags(self, url: str) -> List[str]:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        flags: List[str] = []
+        if host and any(self._host_matches(host, auth_host) for auth_host in self.DEFAULT_AUTH_GATED_HOSTS):
+            flags.append("auth_gated_source")
+        return flags
+
+    @staticmethod
+    def _host_matches(host: str, candidate: str) -> bool:
+        return host == candidate or host.endswith(f".{candidate}")
+
+    @classmethod
+    def _default_profile_for_mode(cls, mode: ArchiveMode) -> str:
+        if mode == ArchiveMode.MEDIA_YTDLP:
+            return "media_fast"
+        if mode == ArchiveMode.GALLERY_DL:
+            return "gallery_deep"
+        if mode in (ArchiveMode.FULL_WARC, ArchiveMode.ZIP_WARC):
+            return "forensic"
+        return "balanced"
+
+    @classmethod
+    def _normalize_download_profile(cls, mode: ArchiveMode, download_profile: str) -> str:
+        profile = (download_profile or "").strip().lower() or cls._default_profile_for_mode(mode)
+        profile_row = cls.DOWNLOAD_PROFILES.get(profile)
+        if not profile_row:
+            raise ArchiveTeamError(f"Unsupported download_profile: {download_profile}")
+        if mode.value not in profile_row["allowed_modes"]:
+            raise ArchiveTeamError(f"download_profile '{profile}' is not supported for archive mode '{mode.value}'.")
+        return profile
+
+    @classmethod
+    def _normalize_profile_options(
+        cls,
+        mode: ArchiveMode,
+        download_profile: str,
+        profile_options: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not isinstance(profile_options, dict):
+            raise ArchiveTeamError("profile_options must be a JSON object.")
+
+        defaults = cls._clone(cls.DOWNLOAD_PROFILES[download_profile]["defaults"])
+        for key, value in profile_options.items():
+            if key not in defaults:
+                raise ArchiveTeamError(f"Unsupported profile option: {key}")
+            defaults[key] = value
+
+        quality = str(defaults.get("video_quality", "best")).strip().lower()
+        if quality not in cls.ALLOWED_VIDEO_QUALITIES:
+            raise ArchiveTeamError("profile_options.video_quality is invalid.")
+        defaults["video_quality"] = quality
+
+        defaults["audio_only"] = cls._parse_bool(defaults.get("audio_only", False), "profile_options.audio_only")
+        defaults["include_subtitles"] = cls._parse_bool(
+            defaults.get("include_subtitles", False),
+            "profile_options.include_subtitles",
+        )
+        defaults["include_thumbnail"] = cls._parse_bool(
+            defaults.get("include_thumbnail", False),
+            "profile_options.include_thumbnail",
+        )
+        defaults["playlist"] = cls._parse_bool(defaults.get("playlist", False), "profile_options.playlist")
+
+        media_format = str(defaults.get("format", "")).strip().lower()
+        if media_format not in cls.ALLOWED_MEDIA_FORMATS:
+            raise ArchiveTeamError("profile_options.format is invalid.")
+        defaults["format"] = media_format
+
+        gallery_max_items = cls._parse_int(defaults.get("gallery_max_items", 0), "profile_options.gallery_max_items")
+        if gallery_max_items < 0 or gallery_max_items > 5000:
+            raise ArchiveTeamError("profile_options.gallery_max_items must be between 0 and 5000.")
+        defaults["gallery_max_items"] = gallery_max_items
+
+        cookies_source = str(defaults.get("cookies_from_browser", "")).strip().lower()
+        if cookies_source not in cls.ALLOWED_COOKIE_BROWSERS:
+            raise ArchiveTeamError("profile_options.cookies_from_browser is invalid.")
+        defaults["cookies_from_browser"] = cookies_source
+
+        if mode != ArchiveMode.MEDIA_YTDLP and defaults["audio_only"]:
+            raise ArchiveTeamError("audio_only option is only supported for MEDIA_YTDLP mode.")
+        if mode == ArchiveMode.GALLERY_DL and defaults["audio_only"]:
+            raise ArchiveTeamError("audio_only cannot be used with GALLERY_DL mode.")
+
+        return defaults
+
+    @classmethod
+    def _normalize_worker_controls(cls, worker_controls: Dict[str, Any]) -> Dict[str, int]:
+        if not isinstance(worker_controls, dict):
+            raise ArchiveTeamError("worker_controls must be a JSON object.")
+
+        normalized = cls._clone(cls.DEFAULT_WORKER_CONTROLS)
+        for key in worker_controls.keys():
+            if key not in normalized:
+                raise ArchiveTeamError(f"Unsupported worker control: {key}")
+
+        if "max_retries" in worker_controls:
+            normalized["max_retries"] = cls._parse_int(worker_controls["max_retries"], "worker_controls.max_retries")
+        if "retry_backoff_seconds" in worker_controls:
+            normalized["retry_backoff_seconds"] = cls._parse_int(
+                worker_controls["retry_backoff_seconds"],
+                "worker_controls.retry_backoff_seconds",
+            )
+        if "sleep_interval_seconds" in worker_controls:
+            normalized["sleep_interval_seconds"] = cls._parse_int(
+                worker_controls["sleep_interval_seconds"],
+                "worker_controls.sleep_interval_seconds",
+            )
+        if "max_concurrent_downloads" in worker_controls:
+            normalized["max_concurrent_downloads"] = cls._parse_int(
+                worker_controls["max_concurrent_downloads"],
+                "worker_controls.max_concurrent_downloads",
+            )
+
+        if normalized["max_retries"] < 0 or normalized["max_retries"] > 8:
+            raise ArchiveTeamError("worker_controls.max_retries must be between 0 and 8.")
+        if normalized["retry_backoff_seconds"] < 0 or normalized["retry_backoff_seconds"] > 300:
+            raise ArchiveTeamError("worker_controls.retry_backoff_seconds must be between 0 and 300.")
+        if normalized["sleep_interval_seconds"] < 0 or normalized["sleep_interval_seconds"] > 120:
+            raise ArchiveTeamError("worker_controls.sleep_interval_seconds must be between 0 and 120.")
+        if normalized["max_concurrent_downloads"] < 1 or normalized["max_concurrent_downloads"] > 8:
+            raise ArchiveTeamError("worker_controls.max_concurrent_downloads must be between 1 and 8.")
+
+        return normalized
+
+    def _hydrate_request_defaults(self, request_record: Dict[str, Any]) -> None:
+        try:
+            mode = ArchiveMode(request_record.get("archive_mode", ArchiveMode.FULL_WARC.value))
+        except ValueError:
+            mode = ArchiveMode.FULL_WARC
+            request_record["archive_mode"] = mode.value
+
+        desired_profile = str(request_record.get("download_profile", "")).strip().lower()
+        try:
+            normalized_profile = self._normalize_download_profile(mode, desired_profile)
+        except ArchiveTeamError:
+            normalized_profile = self._default_profile_for_mode(mode)
+        request_record["download_profile"] = normalized_profile
+
+        try:
+            request_record["profile_options"] = self._normalize_profile_options(
+                mode=mode,
+                download_profile=normalized_profile,
+                profile_options=request_record.get("profile_options", {}) or {},
+            )
+        except ArchiveTeamError:
+            request_record["profile_options"] = self._normalize_profile_options(
+                mode=mode,
+                download_profile=normalized_profile,
+                profile_options={},
+            )
+
+        try:
+            request_record["worker_controls"] = self._normalize_worker_controls(request_record.get("worker_controls", {}) or {})
+        except ArchiveTeamError:
+            request_record["worker_controls"] = self._clone(self.DEFAULT_WORKER_CONTROLS)
+
+        request_record["policy_flags"] = self._clone(request_record.get("policy_flags", self._build_policy_flags(request_record.get("url", ""))))
+
+    @staticmethod
+    def _parse_int(value: Any, field_name: str) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ArchiveTeamError(f"{field_name} must be an integer.") from exc
+
+    @staticmethod
+    def _parse_bool(value: Any, field_name: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "y", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "n", "off"}:
+                return False
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        raise ArchiveTeamError(f"{field_name} must be a boolean.")
 
     @staticmethod
     def _validate_site_cid(cid: str) -> None:

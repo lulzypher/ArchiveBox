@@ -439,3 +439,135 @@ def test_archiveteam_api_site_pinning_flow(tmp_path, monkeypatch):
     health_payload = _json(health)
     assert health_payload["healthy"] is True
     assert health_payload["online_pinners"] == 2
+
+
+def test_archiveteam_api_request_options_and_media_profiles(tmp_path, monkeypatch):
+    out_dir = tmp_path / "api-request-options"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    state_file = out_dir / "archiveteam_state.json"
+    monkeypatch.setenv("ARCHIVETEAM_STATE_FILE", str(state_file))
+    setup_django(out_dir=Path(out_dir), check_db=False, in_memory_db=True)
+    client = Client()
+
+    register = client.post(
+        "/api/archiveteam/register",
+        data=json.dumps({"username": "media", "country": "US", "is_worker": True}),
+        content_type="application/json",
+    )
+    assert register.status_code == 201
+    payload = _json(register)
+
+    from archivebox.archiveteam import ArchiveTeamNode, ArchiveTeamNetwork
+
+    temp_network = ArchiveTeamNetwork(storage_path=str(state_file))
+    node = ArchiveTeamNode(
+        network=temp_network,
+        private_key=payload["keys"]["private_key"],
+        public_key=payload["keys"]["public_key"],
+    )
+
+    challenge = _json(
+        client.post(
+            "/api/archiveteam/login/challenge",
+            data=json.dumps({"public_key": payload["user"]["display_public_key"]}),
+            content_type="application/json",
+        )
+    )["challenge"]
+    signature = node.sign_login_challenge(challenge)
+    session = _json(
+        client.post(
+            "/api/archiveteam/login/complete",
+            data=json.dumps({"public_key": payload["user"]["display_public_key"], "signature": signature}),
+            content_type="application/json",
+        )
+    )["session_token"]
+
+    options = client.get("/api/archiveteam/request-options")
+    assert options.status_code == 200
+    options_payload = _json(options)
+    assert "MEDIA_YTDLP" in options_payload["archive_modes"]
+    assert "GALLERY_DL" in options_payload["archive_modes"]
+    assert "media_fast" in options_payload["download_profiles"]
+    assert "gallery_deep" in options_payload["download_profiles"]
+    assert options_payload["default_worker_controls"]["max_retries"] == 3
+
+    media_req = client.post(
+        "/api/archiveteam/requests",
+        data=json.dumps(
+            {
+                "url": "https://youtube.com/watch?v=abc",
+                "archive_mode": "MEDIA_YTDLP",
+                "download_profile": "media_fast",
+                "profile_options": {"video_quality": "720p", "audio_only": False},
+                "worker_controls": {"max_retries": 4, "sleep_interval_seconds": 2},
+            }
+        ),
+        content_type="application/json",
+        HTTP_X_AT_SESSION=session,
+    )
+    assert media_req.status_code == 201
+    media_payload = _json(media_req)
+    assert media_payload["archive_mode"] == "MEDIA_YTDLP"
+    assert media_payload["profile_options"]["video_quality"] == "720p"
+    assert media_payload["worker_controls"]["max_retries"] == 4
+
+    gallery_req = client.post(
+        "/api/archiveteam/requests",
+        data=json.dumps(
+            {
+                "url": "https://instagram.com/p/test",
+                "archive_mode": "GALLERY_DL",
+                "download_profile": "gallery_deep",
+                "profile_options": {"gallery_max_items": 123},
+            }
+        ),
+        content_type="application/json",
+        HTTP_X_AT_SESSION=session,
+    )
+    assert gallery_req.status_code == 201
+    gallery_payload = _json(gallery_req)
+    assert gallery_payload["archive_mode"] == "GALLERY_DL"
+    assert gallery_payload["profile_options"]["gallery_max_items"] == 123
+
+    coursera_req = client.post(
+        "/api/archiveteam/requests",
+        data=json.dumps(
+            {
+                "url": "https://coursera.org/learn/crypto",
+                "archive_mode": "FULL_WARC",
+                "download_profile": "forensic",
+            }
+        ),
+        content_type="application/json",
+        HTTP_X_AT_SESSION=session,
+    )
+    assert coursera_req.status_code == 201
+    assert "auth_gated_source" in _json(coursera_req)["policy_flags"]
+
+    invalid_profile = client.post(
+        "/api/archiveteam/requests",
+        data=json.dumps(
+            {
+                "url": "https://youtube.com/watch?v=abc",
+                "archive_mode": "MEDIA_YTDLP",
+                "download_profile": "forensic",
+            }
+        ),
+        content_type="application/json",
+        HTTP_X_AT_SESSION=session,
+    )
+    assert invalid_profile.status_code == 400
+
+    blocked_drm = client.post(
+        "/api/archiveteam/requests",
+        data=json.dumps(
+            {
+                "url": "https://www.netflix.com/title/1234",
+                "archive_mode": "MEDIA_YTDLP",
+            }
+        ),
+        content_type="application/json",
+        HTTP_X_AT_SESSION=session,
+    )
+    assert blocked_drm.status_code == 400

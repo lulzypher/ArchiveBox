@@ -389,3 +389,74 @@ def test_site_release_pinning_and_health_with_governance():
     health = network.get_site_health(min_online_pinners=3)
     assert health["healthy"] is True
     assert health["online_pinners"] == 3
+
+
+def test_request_profiles_modes_worker_controls_and_policy_flags():
+    network = ArchiveTeamNetwork()
+    keypair, user = _new_user(network, "media-user", "US")
+    node = ArchiveTeamNode(network, keypair["private_key"], keypair["public_key"])
+    node.heartbeat("US")
+
+    media_request = node.submit_request(
+        url="https://youtube.com/watch?v=abc",
+        archive_mode=ArchiveMode.MEDIA_YTDLP.value,
+        download_profile="media_fast",
+        profile_options={"audio_only": "false", "video_quality": "720p"},
+        worker_controls={"max_retries": "4", "sleep_interval_seconds": 3},
+    )
+    assert media_request["archive_mode"] == ArchiveMode.MEDIA_YTDLP.value
+    assert media_request["download_profile"] == "media_fast"
+    assert media_request["profile_options"]["audio_only"] is False
+    assert media_request["profile_options"]["video_quality"] == "720p"
+    assert media_request["worker_controls"]["max_retries"] == 4
+    assert media_request["worker_controls"]["sleep_interval_seconds"] == 3
+
+    gallery_request = node.submit_request(
+        url="https://instagram.com/p/test",
+        archive_mode=ArchiveMode.GALLERY_DL.value,
+        download_profile="gallery_deep",
+        profile_options={"gallery_max_items": 200},
+    )
+    assert gallery_request["archive_mode"] == ArchiveMode.GALLERY_DL.value
+    assert gallery_request["profile_options"]["gallery_max_items"] == 200
+
+    auth_request = node.submit_request(
+        url="https://www.coursera.org/learn/crypto",
+        archive_mode=ArchiveMode.FULL_WARC.value,
+        download_profile="forensic",
+    )
+    assert "auth_gated_source" in auth_request["policy_flags"]
+
+    with pytest.raises(ArchiveTeamError):
+        node.submit_request(
+            url="https://youtube.com/watch?v=abc",
+            archive_mode=ArchiveMode.MEDIA_YTDLP.value,
+            download_profile="forensic",
+        )
+
+    with pytest.raises(ArchiveTeamError):
+        node.submit_request(
+            url="https://youtube.com/watch?v=abc",
+            archive_mode=ArchiveMode.MEDIA_YTDLP.value,
+            download_profile="media_fast",
+            worker_controls={"max_retries": "abc"},
+        )
+
+    with pytest.raises(ArchiveTeamError):
+        node.submit_request(
+            url="https://youtube.com/watch?v=abc",
+            archive_mode=ArchiveMode.GALLERY_DL.value,
+            download_profile="gallery_deep",
+            profile_options={"audio_only": True},
+        )
+
+
+def test_drm_hosts_are_blocked_by_content_policy():
+    network = ArchiveTeamNetwork()
+    keypair, user = _new_user(network, "policy-user", "US")
+    with pytest.raises(ArchiveTeamError):
+        network.submit_request(
+            requester_public_key=user["display_public_key"],
+            url="https://www.netflix.com/title/1234",
+            archive_mode=ArchiveMode.MEDIA_YTDLP.value,
+        )

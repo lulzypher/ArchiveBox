@@ -35,12 +35,18 @@ class ArchiveTeamNode:
         url: str,
         archive_mode: str,
         country_preference: str = "",
+        download_profile: str = "balanced",
+        profile_options: Optional[Dict[str, Any]] = None,
+        worker_controls: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return self.network.submit_request(
             requester_public_key=self.public_key,
             url=url,
             archive_mode=archive_mode,
             country_preference=country_preference,
+            download_profile=download_profile,
+            profile_options=profile_options,
+            worker_controls=worker_controls,
         )
 
     def poll_and_claim(self) -> Optional[Dict[str, Any]]:

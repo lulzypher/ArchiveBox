@@ -101,8 +101,20 @@ class ArchiveTeamAPIView(View):
                     url=body["url"],
                     archive_mode=body.get("archive_mode", "FULL_WARC"),
                     country_preference=body.get("country_preference", ""),
+                    download_profile=body.get("download_profile", "balanced"),
+                    profile_options=body.get("profile_options", {}),
+                    worker_controls=body.get("worker_controls", {}),
                 )
                 return self._ok(request_row, status=201)
+
+            if method == "GET" and endpoint == "request-options":
+                return self._ok(
+                    {
+                        "archive_modes": network.list_archive_modes(),
+                        "download_profiles": network.list_download_profiles(),
+                        "default_worker_controls": network.default_worker_controls(),
+                    }
+                )
 
             if method == "GET" and endpoint == "requests/open":
                 session_key = self._optional_session(network, request)
