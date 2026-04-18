@@ -12,11 +12,11 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 
 from ..archiveteam import ArchiveTeamError, ArchiveTeamNetwork
-from ..config import OUTPUT_DIR
+from ..config.constants import CONSTANTS
 
 
 def _state_file_path() -> str:
-    return os.environ.get("ARCHIVETEAM_STATE_FILE") or str(Path(OUTPUT_DIR) / "archiveteam_state.json")
+    return os.environ.get("ARCHIVETEAM_STATE_FILE") or str(Path(CONSTANTS.DATA_DIR) / "archiveteam_state.json")
 
 
 @method_decorator(csrf_exempt, name="dispatch")

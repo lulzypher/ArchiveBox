@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
-
 from django.test import Client
 
-from archivebox.config import setup_django
+from archivebox.config.django import setup_django
 
 
 def _json(response):
     return json.loads(response.content.decode("utf-8"))
+
+
+def _post_json(client: Client, url: str, payload: dict, **kwargs):
+    return client.post(url, data=json.dumps(payload), content_type="application/json", follow=False, **kwargs)
 
 
 def test_archiveteam_api_end_to_end(tmp_path, monkeypatch):
@@ -19,24 +21,25 @@ def test_archiveteam_api_end_to_end(tmp_path, monkeypatch):
 
     state_file = out_dir / "archiveteam_state.json"
     monkeypatch.setenv("ARCHIVETEAM_STATE_FILE", str(state_file))
-    setup_django(out_dir=Path(out_dir), check_db=False, in_memory_db=True)
+    monkeypatch.setenv("DATA_DIR", str(out_dir))
+    setup_django(check_db=False, in_memory_db=False)
 
-    client = Client()
+    client = Client(HTTP_HOST="api.archivebox.localhost:8000")
 
     # Register two users
-    register_owner = client.post(
+    register_owner = _post_json(
+        client,
         "/api/archiveteam/register",
-        data=json.dumps({"username": "owner", "country": "US", "is_worker": True}),
-        content_type="application/json",
+        {"username": "owner", "country": "US", "is_worker": True},
     )
     assert register_owner.status_code == 201
     owner_payload = _json(register_owner)
     owner_key = owner_payload["user"]["display_public_key"]
 
-    register_worker = client.post(
+    register_worker = _post_json(
+        client,
         "/api/archiveteam/register",
-        data=json.dumps({"username": "worker", "country": "US", "is_worker": True}),
-        content_type="application/json",
+        {"username": "worker", "country": "US", "is_worker": True},
     )
     assert register_worker.status_code == 201
     worker_payload = _json(register_worker)
@@ -44,14 +47,14 @@ def test_archiveteam_api_end_to_end(tmp_path, monkeypatch):
 
     # Mark both online
     owner_headers = {"HTTP_X_AT_SESSION": owner_payload["keys"]["private_key"]}  # intentionally wrong token first
-    bad_heartbeat = client.post("/api/archiveteam/heartbeat", data="{}", content_type="application/json", **owner_headers)
+    bad_heartbeat = client.post("/api/archiveteam/heartbeat", data="{}", content_type="application/json", follow=True, **owner_headers)
     assert bad_heartbeat.status_code == 400
 
     # Login flow for owner
-    owner_challenge = client.post(
+    owner_challenge = _post_json(
+        client,
         "/api/archiveteam/login/challenge",
-        data=json.dumps({"public_key": owner_key}),
-        content_type="application/json",
+        {"public_key": owner_key},
     )
     assert owner_challenge.status_code == 200
     challenge_value = _json(owner_challenge)["challenge"]
@@ -66,19 +69,19 @@ def test_archiveteam_api_end_to_end(tmp_path, monkeypatch):
     )
     owner_sig = owner_node.sign_login_challenge(challenge_value)
 
-    owner_login = client.post(
+    owner_login = _post_json(
+        client,
         "/api/archiveteam/login/complete",
-        data=json.dumps({"public_key": owner_key, "signature": owner_sig}),
-        content_type="application/json",
+        {"public_key": owner_key, "signature": owner_sig},
     )
     assert owner_login.status_code == 200
     owner_session = _json(owner_login)["session_token"]
 
     # Login flow for worker
-    worker_challenge = client.post(
+    worker_challenge = _post_json(
+        client,
         "/api/archiveteam/login/challenge",
-        data=json.dumps({"public_key": worker_key}),
-        content_type="application/json",
+        {"public_key": worker_key},
     )
     challenge_value_worker = _json(worker_challenge)["challenge"]
     worker_node = ArchiveTeamNode(
@@ -87,110 +90,106 @@ def test_archiveteam_api_end_to_end(tmp_path, monkeypatch):
         public_key=worker_payload["keys"]["public_key"],
     )
     worker_sig = worker_node.sign_login_challenge(challenge_value_worker)
-    worker_login = client.post(
+    worker_login = _post_json(
+        client,
         "/api/archiveteam/login/complete",
-        data=json.dumps({"public_key": worker_key, "signature": worker_sig}),
-        content_type="application/json",
+        {"public_key": worker_key, "signature": worker_sig},
     )
     worker_session = _json(worker_login)["session_token"]
 
     # Heartbeats
-    owner_heartbeat = client.post(
+    owner_heartbeat = _post_json(
+        client,
         "/api/archiveteam/heartbeat",
-        data=json.dumps({"country_code": "US"}),
-        content_type="application/json",
+        {"country_code": "US"},
         HTTP_X_AT_SESSION=owner_session,
     )
     assert owner_heartbeat.status_code == 200
-    worker_heartbeat = client.post(
+    worker_heartbeat = _post_json(
+        client,
         "/api/archiveteam/heartbeat",
-        data=json.dumps({"country_code": "US"}),
-        content_type="application/json",
+        {"country_code": "US"},
         HTTP_X_AT_SESSION=worker_session,
     )
     assert worker_heartbeat.status_code == 200
 
     # Owner submits request, worker claims + fulfills
-    submitted = client.post(
+    submitted = _post_json(
+        client,
         "/api/archiveteam/requests",
-        data=json.dumps({"url": "https://example.com", "archive_mode": "FULL_WARC"}),
-        content_type="application/json",
+        {"url": "https://example.com", "archive_mode": "FULL_WARC"},
         HTTP_X_AT_SESSION=owner_session,
     )
     assert submitted.status_code == 201
     request_id = _json(submitted)["request_id"]
 
-    claimed = client.post(
+    claimed = _post_json(
+        client,
         "/api/archiveteam/requests/claim",
-        data=json.dumps({"request_id": request_id}),
-        content_type="application/json",
+        {"request_id": request_id},
         HTTP_X_AT_SESSION=worker_session,
     )
     assert claimed.status_code == 200
 
-    fulfilled = client.post(
+    fulfilled = _post_json(
+        client,
         "/api/archiveteam/requests/fulfill",
-        data=json.dumps(
-            {
-                "request_id": request_id,
-                "content_hash": "a" * 64,
-                "storage_uri": "ipfs://abc123",
-            }
-        ),
-        content_type="application/json",
+        {
+            "request_id": request_id,
+            "content_hash": "a" * 64,
+            "storage_uri": "ipfs://abc123",
+        },
         HTTP_X_AT_SESSION=worker_session,
     )
     assert fulfilled.status_code == 200
     archive_id = _json(fulfilled)["archive_id"]
 
     # Collection create + submit + review + fork
-    created_collection = client.post(
+    created_collection = _post_json(
+        client,
         "/api/archiveteam/collections",
-        data=json.dumps(
-            {
-                "name": "Main Collection",
-                "description": "desc",
-                "allow_submissions": True,
-            }
-        ),
-        content_type="application/json",
+        {
+            "name": "Main Collection",
+            "description": "desc",
+            "allow_submissions": True,
+        },
         HTTP_X_AT_SESSION=owner_session,
     )
     assert created_collection.status_code == 201
     collection_id = _json(created_collection)["collection_id"]
 
-    submitted_to_collection = client.post(
+    submitted_to_collection = _post_json(
+        client,
         f"/api/archiveteam/collections/{collection_id}/submit",
-        data=json.dumps({"archive_id": archive_id, "note": "please add"}),
-        content_type="application/json",
+        {"archive_id": archive_id, "note": "please add"},
         HTTP_X_AT_SESSION=worker_session,
     )
     assert submitted_to_collection.status_code == 201
     submission_id = _json(submitted_to_collection)["submission_id"]
 
-    reviewed = client.post(
+    reviewed = _post_json(
+        client,
         f"/api/archiveteam/submissions/{submission_id}/review",
-        data=json.dumps({"approve": True}),
-        content_type="application/json",
+        {"approve": True},
         HTTP_X_AT_SESSION=owner_session,
     )
     assert reviewed.status_code == 200
     assert _json(reviewed)["status"] == "APPROVED"
 
-    forked = client.post(
+    forked = _post_json(
+        client,
         f"/api/archiveteam/collections/{collection_id}/fork",
-        data=json.dumps({"name": "Forked"}),
-        content_type="application/json",
+        {"name": "Forked"},
         HTTP_X_AT_SESSION=worker_session,
     )
     assert forked.status_code == 201
     assert _json(forked)["forked_from"] == collection_id
 
     # Safety filter (default blocked term)
-    blocked = client.post(
+    blocked = _post_json(
+        client,
         "/api/archiveteam/requests",
-        data=json.dumps({"url": "https://example.com/csam"}),
-        content_type="application/json",
+        {"url": "https://example.com/csam"},
         HTTP_X_AT_SESSION=owner_session,
     )
     assert blocked.status_code == 400
@@ -214,31 +213,14 @@ def test_archiveteam_api_governance_proposal_flow(tmp_path, monkeypatch):
 
     state_file = out_dir / "archiveteam_state.json"
     monkeypatch.setenv("ARCHIVETEAM_STATE_FILE", str(state_file))
-    setup_django(out_dir=Path(out_dir), check_db=False, in_memory_db=True)
-    client = Client()
+    monkeypatch.setenv("DATA_DIR", str(out_dir))
+    setup_django(check_db=False, in_memory_db=False)
+    client = Client(HTTP_HOST="api.archivebox.localhost:8000")
 
     # register author + voters
-    author_payload = _json(
-        client.post(
-            "/api/archiveteam/register",
-            data=json.dumps({"username": "author", "country": "US", "is_worker": True}),
-            content_type="application/json",
-        )
-    )
-    voter1_payload = _json(
-        client.post(
-            "/api/archiveteam/register",
-            data=json.dumps({"username": "voter1", "country": "US", "is_worker": True}),
-            content_type="application/json",
-        )
-    )
-    voter2_payload = _json(
-        client.post(
-            "/api/archiveteam/register",
-            data=json.dumps({"username": "voter2", "country": "US", "is_worker": True}),
-            content_type="application/json",
-        )
-    )
+    author_payload = _json(_post_json(client, "/api/archiveteam/register", {"username": "author", "country": "US", "is_worker": True}))
+    voter1_payload = _json(_post_json(client, "/api/archiveteam/register", {"username": "voter1", "country": "US", "is_worker": True}))
+    voter2_payload = _json(_post_json(client, "/api/archiveteam/register", {"username": "voter2", "country": "US", "is_worker": True}))
 
     from archivebox.archiveteam import ArchiveTeamNode, ArchiveTeamNetwork
 
@@ -260,19 +242,9 @@ def test_archiveteam_api_governance_proposal_flow(tmp_path, monkeypatch):
     )
 
     def login(display_public_key, node):
-        challenge = _json(
-            client.post(
-                "/api/archiveteam/login/challenge",
-                data=json.dumps({"public_key": display_public_key}),
-                content_type="application/json",
-            )
-        )["challenge"]
+        challenge = _json(_post_json(client, "/api/archiveteam/login/challenge", {"public_key": display_public_key}))["challenge"]
         signature = node.sign_login_challenge(challenge)
-        login_resp = client.post(
-            "/api/archiveteam/login/complete",
-            data=json.dumps({"public_key": display_public_key, "signature": signature}),
-            content_type="application/json",
-        )
+        login_resp = _post_json(client, "/api/archiveteam/login/complete", {"public_key": display_public_key, "signature": signature})
         assert login_resp.status_code == 200
         return _json(login_resp)["session_token"]
 
@@ -280,43 +252,41 @@ def test_archiveteam_api_governance_proposal_flow(tmp_path, monkeypatch):
     voter1_session = login(voter1_payload["user"]["display_public_key"], voter1_node)
     voter2_session = login(voter2_payload["user"]["display_public_key"], voter2_node)
 
-    proposal_resp = client.post(
+    proposal_resp = _post_json(
+        client,
         "/api/archiveteam/proposals",
-        data=json.dumps(
-            {
-                "title": "Add richer moderation tools",
-                "description": "Enable community votes on changes before rollout.",
-                "change_type": "FEATURE",
-                "target": "governance",
-                "quorum": 2,
-                "yes_threshold": 0.5,
-            }
-        ),
-        content_type="application/json",
+        {
+            "title": "Add richer moderation tools",
+            "description": "Enable community votes on changes before rollout.",
+            "change_type": "FEATURE",
+            "target": "governance",
+            "quorum": 2,
+            "yes_threshold": 0.5,
+        },
         HTTP_X_AT_SESSION=author_session,
     )
     assert proposal_resp.status_code == 201
     proposal = _json(proposal_resp)
 
-    vote1 = client.post(
+    vote1 = _post_json(
+        client,
         f"/api/archiveteam/proposals/{proposal['proposal_id']}/vote",
-        data=json.dumps({"vote": "YES"}),
-        content_type="application/json",
+        {"vote": "YES"},
         HTTP_X_AT_SESSION=voter1_session,
     )
     assert vote1.status_code == 200
-    vote2 = client.post(
+    vote2 = _post_json(
+        client,
         f"/api/archiveteam/proposals/{proposal['proposal_id']}/vote",
-        data=json.dumps({"vote": "NO"}),
-        content_type="application/json",
+        {"vote": "NO"},
         HTTP_X_AT_SESSION=voter2_session,
     )
     assert vote2.status_code == 200
 
-    finalized = client.post(
+    finalized = _post_json(
+        client,
         f"/api/archiveteam/proposals/{proposal['proposal_id']}/finalize",
-        data=json.dumps({}),
-        content_type="application/json",
+        {},
         HTTP_X_AT_SESSION=author_session,
     )
     assert finalized.status_code == 200
@@ -335,30 +305,13 @@ def test_archiveteam_api_site_pinning_flow(tmp_path, monkeypatch):
 
     state_file = out_dir / "archiveteam_state.json"
     monkeypatch.setenv("ARCHIVETEAM_STATE_FILE", str(state_file))
-    setup_django(out_dir=Path(out_dir), check_db=False, in_memory_db=True)
-    client = Client()
+    monkeypatch.setenv("DATA_DIR", str(out_dir))
+    setup_django(check_db=False, in_memory_db=False)
+    client = Client(HTTP_HOST="api.archivebox.localhost:8000")
 
-    owner_payload = _json(
-        client.post(
-            "/api/archiveteam/register",
-            data=json.dumps({"username": "owner", "country": "US", "is_worker": True}),
-            content_type="application/json",
-        )
-    )
-    node1_payload = _json(
-        client.post(
-            "/api/archiveteam/register",
-            data=json.dumps({"username": "node1", "country": "US", "is_worker": True}),
-            content_type="application/json",
-        )
-    )
-    node2_payload = _json(
-        client.post(
-            "/api/archiveteam/register",
-            data=json.dumps({"username": "node2", "country": "US", "is_worker": True}),
-            content_type="application/json",
-        )
-    )
+    owner_payload = _json(_post_json(client, "/api/archiveteam/register", {"username": "owner", "country": "US", "is_worker": True}))
+    node1_payload = _json(_post_json(client, "/api/archiveteam/register", {"username": "node1", "country": "US", "is_worker": True}))
+    node2_payload = _json(_post_json(client, "/api/archiveteam/register", {"username": "node2", "country": "US", "is_worker": True}))
 
     from archivebox.archiveteam import ArchiveTeamNode, ArchiveTeamNetwork
 
@@ -380,19 +333,9 @@ def test_archiveteam_api_site_pinning_flow(tmp_path, monkeypatch):
     )
 
     def login(display_public_key, node):
-        challenge = _json(
-            client.post(
-                "/api/archiveteam/login/challenge",
-                data=json.dumps({"public_key": display_public_key}),
-                content_type="application/json",
-            )
-        )["challenge"]
+        challenge = _json(_post_json(client, "/api/archiveteam/login/challenge", {"public_key": display_public_key}))["challenge"]
         signature = node.sign_login_challenge(challenge)
-        login_resp = client.post(
-            "/api/archiveteam/login/complete",
-            data=json.dumps({"public_key": display_public_key, "signature": signature}),
-            content_type="application/json",
-        )
+        login_resp = _post_json(client, "/api/archiveteam/login/complete", {"public_key": display_public_key, "signature": signature})
         assert login_resp.status_code == 200
         return _json(login_resp)["session_token"]
 
@@ -402,29 +345,29 @@ def test_archiveteam_api_site_pinning_flow(tmp_path, monkeypatch):
 
     # mark nodes online before pin attestations so health can count them
     for session in (node1_session, node2_session):
-        hb = client.post(
+        hb = _post_json(
+            client,
             "/api/archiveteam/heartbeat",
-            data=json.dumps({"country_code": "US"}),
-            content_type="application/json",
+            {"country_code": "US"},
             HTTP_X_AT_SESSION=session,
         )
         assert hb.status_code == 200
 
     cid = "bafybeigdyrztw4b4k6z6l5y5vci4c3p6k2wrg7u2v5uqf5h3i3b7v5r5pu"
-    release = client.post(
+    release = _post_json(
+        client,
         "/api/archiveteam/site/release",
-        data=json.dumps({"cid": cid, "version": "1.0.0", "notes": "Initial release"}),
-        content_type="application/json",
+        {"cid": cid, "version": "1.0.0", "notes": "Initial release"},
         HTTP_X_AT_SESSION=owner_session,
     )
     assert release.status_code == 200
     assert _json(release)["current_cid"] == cid
 
     for session in (node1_session, node2_session):
-        attest = client.post(
+        attest = _post_json(
+            client,
             "/api/archiveteam/site/pin-attest",
-            data=json.dumps({"pin_provider": "local-ipfs", "pinned": True}),
-            content_type="application/json",
+            {"pin_provider": "local-ipfs", "pinned": True},
             HTTP_X_AT_SESSION=session,
         )
         assert attest.status_code == 200
@@ -447,13 +390,14 @@ def test_archiveteam_api_request_options_and_media_profiles(tmp_path, monkeypatc
 
     state_file = out_dir / "archiveteam_state.json"
     monkeypatch.setenv("ARCHIVETEAM_STATE_FILE", str(state_file))
-    setup_django(out_dir=Path(out_dir), check_db=False, in_memory_db=True)
-    client = Client()
+    monkeypatch.setenv("DATA_DIR", str(out_dir))
+    setup_django(check_db=False, in_memory_db=False)
+    client = Client(HTTP_HOST="api.archivebox.localhost:8000")
 
-    register = client.post(
+    register = _post_json(
+        client,
         "/api/archiveteam/register",
-        data=json.dumps({"username": "media", "country": "US", "is_worker": True}),
-        content_type="application/json",
+        {"username": "media", "country": "US", "is_worker": True},
     )
     assert register.status_code == 201
     payload = _json(register)
@@ -468,18 +412,14 @@ def test_archiveteam_api_request_options_and_media_profiles(tmp_path, monkeypatc
     )
 
     challenge = _json(
-        client.post(
-            "/api/archiveteam/login/challenge",
-            data=json.dumps({"public_key": payload["user"]["display_public_key"]}),
-            content_type="application/json",
-        )
+        _post_json(client, "/api/archiveteam/login/challenge", {"public_key": payload["user"]["display_public_key"]})
     )["challenge"]
     signature = node.sign_login_challenge(challenge)
     session = _json(
-        client.post(
+        _post_json(
+            client,
             "/api/archiveteam/login/complete",
-            data=json.dumps({"public_key": payload["user"]["display_public_key"], "signature": signature}),
-            content_type="application/json",
+            {"public_key": payload["user"]["display_public_key"], "signature": signature},
         )
     )["session_token"]
 
@@ -492,18 +432,16 @@ def test_archiveteam_api_request_options_and_media_profiles(tmp_path, monkeypatc
     assert "gallery_deep" in options_payload["download_profiles"]
     assert options_payload["default_worker_controls"]["max_retries"] == 3
 
-    media_req = client.post(
+    media_req = _post_json(
+        client,
         "/api/archiveteam/requests",
-        data=json.dumps(
-            {
-                "url": "https://youtube.com/watch?v=abc",
-                "archive_mode": "MEDIA_YTDLP",
-                "download_profile": "media_fast",
-                "profile_options": {"video_quality": "720p", "audio_only": False},
-                "worker_controls": {"max_retries": 4, "sleep_interval_seconds": 2},
-            }
-        ),
-        content_type="application/json",
+        {
+            "url": "https://youtube.com/watch?v=abc",
+            "archive_mode": "MEDIA_YTDLP",
+            "download_profile": "media_fast",
+            "profile_options": {"video_quality": "720p", "audio_only": False},
+            "worker_controls": {"max_retries": 4, "sleep_interval_seconds": 2},
+        },
         HTTP_X_AT_SESSION=session,
     )
     assert media_req.status_code == 201
@@ -512,17 +450,15 @@ def test_archiveteam_api_request_options_and_media_profiles(tmp_path, monkeypatc
     assert media_payload["profile_options"]["video_quality"] == "720p"
     assert media_payload["worker_controls"]["max_retries"] == 4
 
-    gallery_req = client.post(
+    gallery_req = _post_json(
+        client,
         "/api/archiveteam/requests",
-        data=json.dumps(
-            {
-                "url": "https://instagram.com/p/test",
-                "archive_mode": "GALLERY_DL",
-                "download_profile": "gallery_deep",
-                "profile_options": {"gallery_max_items": 123},
-            }
-        ),
-        content_type="application/json",
+        {
+            "url": "https://instagram.com/p/test",
+            "archive_mode": "GALLERY_DL",
+            "download_profile": "gallery_deep",
+            "profile_options": {"gallery_max_items": 123},
+        },
         HTTP_X_AT_SESSION=session,
     )
     assert gallery_req.status_code == 201
@@ -530,44 +466,38 @@ def test_archiveteam_api_request_options_and_media_profiles(tmp_path, monkeypatc
     assert gallery_payload["archive_mode"] == "GALLERY_DL"
     assert gallery_payload["profile_options"]["gallery_max_items"] == 123
 
-    coursera_req = client.post(
+    coursera_req = _post_json(
+        client,
         "/api/archiveteam/requests",
-        data=json.dumps(
-            {
-                "url": "https://coursera.org/learn/crypto",
-                "archive_mode": "FULL_WARC",
-                "download_profile": "forensic",
-            }
-        ),
-        content_type="application/json",
+        {
+            "url": "https://coursera.org/learn/crypto",
+            "archive_mode": "FULL_WARC",
+            "download_profile": "forensic",
+        },
         HTTP_X_AT_SESSION=session,
     )
     assert coursera_req.status_code == 201
     assert "auth_gated_source" in _json(coursera_req)["policy_flags"]
 
-    invalid_profile = client.post(
+    invalid_profile = _post_json(
+        client,
         "/api/archiveteam/requests",
-        data=json.dumps(
-            {
-                "url": "https://youtube.com/watch?v=abc",
-                "archive_mode": "MEDIA_YTDLP",
-                "download_profile": "forensic",
-            }
-        ),
-        content_type="application/json",
+        {
+            "url": "https://youtube.com/watch?v=abc",
+            "archive_mode": "MEDIA_YTDLP",
+            "download_profile": "forensic",
+        },
         HTTP_X_AT_SESSION=session,
     )
     assert invalid_profile.status_code == 400
 
-    blocked_drm = client.post(
+    blocked_drm = _post_json(
+        client,
         "/api/archiveteam/requests",
-        data=json.dumps(
-            {
-                "url": "https://www.netflix.com/title/1234",
-                "archive_mode": "MEDIA_YTDLP",
-            }
-        ),
-        content_type="application/json",
+        {
+            "url": "https://www.netflix.com/title/1234",
+            "archive_mode": "MEDIA_YTDLP",
+        },
         HTTP_X_AT_SESSION=session,
     )
     assert blocked_drm.status_code == 400
