@@ -74,6 +74,7 @@ class ArchiveTeamNetwork:
         self.archives: Dict[str, Dict[str, Any]] = {}
         self.collections: Dict[str, Dict[str, Any]] = {}
         self.collection_submissions: Dict[str, Dict[str, Any]] = {}
+        self.proposals: Dict[str, Dict[str, Any]] = {}
         self.ledger: List[Dict[str, Any]] = []
         self.online_nodes: Dict[str, str] = {}
         self.login_challenges: Dict[str, Dict[str, str]] = {}
@@ -610,6 +611,194 @@ class ArchiveTeamNetwork:
         self._save()
         return self._clone(submission)
 
+    # -------------------------------------------------------------------------
+    # Governance proposals (GitHub-like change + voting flow)
+    # -------------------------------------------------------------------------
+
+    def create_proposal(
+        self,
+        author_public_key: str,
+        title: str,
+        description: str,
+        change_type: str,
+        target: str = "",
+        proposed_patch: str = "",
+        quorum: int = 3,
+        yes_threshold: float = 0.6,
+    ) -> Dict[str, Any]:
+        author_key = self.normalize_public_key(author_public_key)
+        self._require_user(author_key)
+
+        if not (title or "").strip():
+            raise ArchiveTeamError("Proposal title is required.")
+        if len((title or "").strip()) > 160:
+            raise ArchiveTeamError("Proposal title must be 160 characters or less.")
+        if len(description or "") > 8000:
+            raise ArchiveTeamError("Proposal description must be 8000 characters or less.")
+        if quorum < 1:
+            raise ArchiveTeamError("Proposal quorum must be at least 1.")
+        if not (0.0 < yes_threshold <= 1.0):
+            raise ArchiveTeamError("yes_threshold must be greater than 0 and less than or equal to 1.")
+
+        proposal_id = secrets.token_hex(12)
+        proposal = {
+            "proposal_id": proposal_id,
+            "author_public_key": author_key,
+            "title": title.strip(),
+            "description": description.strip(),
+            "change_type": (change_type or "").strip(),
+            "target": (target or "").strip(),
+            "proposed_patch": proposed_patch or "",
+            "status": "OPEN",
+            "quorum": int(quorum),
+            "yes_threshold": float(yes_threshold),
+            "votes": {},
+            "yes_count": 0,
+            "no_count": 0,
+            "abstain_count": 0,
+            "finalized_at": "",
+            "finalized_by": "",
+            "result": "",
+            "created_at": self._now().isoformat(),
+            "updated_at": self._now().isoformat(),
+        }
+        self.proposals[proposal_id] = proposal
+        self._append_ledger_entry(
+            {
+                "event": "ProposalCreated",
+                "proposal_id": proposal_id,
+                "author_public_key": author_key,
+                "change_type": proposal["change_type"],
+                "target": proposal["target"],
+            }
+        )
+        self._save()
+        return self._clone(proposal)
+
+    def list_proposals(
+        self,
+        status: str = "",
+        author_public_key: str = "",
+    ) -> List[Dict[str, Any]]:
+        author_key = self.normalize_public_key(author_public_key) if author_public_key else ""
+        wanted_status = (status or "").strip().upper()
+        if wanted_status and wanted_status not in {"OPEN", "APPROVED", "REJECTED", "CLOSED"}:
+            raise ArchiveTeamError("Invalid proposal status filter.")
+
+        rows: List[Dict[str, Any]] = []
+        for proposal in self.proposals.values():
+            if wanted_status and proposal["status"] != wanted_status:
+                continue
+            if author_key and proposal["author_public_key"] != author_key:
+                continue
+            rows.append(self._clone(proposal))
+        rows.sort(key=lambda row: row["created_at"], reverse=True)
+        return rows
+
+    def get_proposal(self, proposal_id: str) -> Dict[str, Any]:
+        return self._clone(self._require_proposal(proposal_id))
+
+    def cast_proposal_vote(
+        self,
+        voter_public_key: str,
+        proposal_id: str,
+        vote: str,
+        note: str = "",
+    ) -> Dict[str, Any]:
+        voter_key = self.normalize_public_key(voter_public_key)
+        self._require_user(voter_key)
+        proposal = self._require_proposal(proposal_id)
+        if proposal["status"] != "OPEN":
+            raise ArchiveTeamError("Votes can only be cast while proposal is OPEN.")
+
+        vote_value = (vote or "").strip().upper()
+        if vote_value not in {"YES", "NO", "ABSTAIN"}:
+            raise ArchiveTeamError("Vote must be YES, NO, or ABSTAIN.")
+
+        proposal["votes"][voter_key] = {
+            "vote": vote_value,
+            "note": (note or "").strip(),
+            "voted_at": self._now().isoformat(),
+        }
+        self._recount_proposal_votes(proposal)
+        self._append_ledger_entry(
+            {
+                "event": "ProposalVoteCast",
+                "proposal_id": proposal_id,
+                "voter_public_key": voter_key,
+                "vote": vote_value,
+            }
+        )
+        self._save()
+        return self._clone(proposal)
+
+    def finalize_proposal(self, actor_public_key: str, proposal_id: str) -> Dict[str, Any]:
+        actor_key = self.normalize_public_key(actor_public_key)
+        self._require_user(actor_key)
+        proposal = self._require_proposal(proposal_id)
+        if proposal["status"] != "OPEN":
+            raise ArchiveTeamError("Only OPEN proposals can be finalized.")
+
+        self._recount_proposal_votes(proposal)
+        total_votes = proposal["yes_count"] + proposal["no_count"] + proposal["abstain_count"]
+        decisive_votes = proposal["yes_count"] + proposal["no_count"]
+        yes_ratio = (proposal["yes_count"] / decisive_votes) if decisive_votes else 0.0
+
+        if total_votes < proposal["quorum"]:
+            result = "REJECTED"
+            reason = "QUORUM_NOT_MET"
+        elif yes_ratio >= proposal["yes_threshold"]:
+            result = "APPROVED"
+            reason = "THRESHOLD_MET"
+        else:
+            result = "REJECTED"
+            reason = "THRESHOLD_NOT_MET"
+
+        proposal["status"] = result
+        proposal["result"] = reason
+        proposal["finalized_by"] = actor_key
+        proposal["finalized_at"] = self._now().isoformat()
+        proposal["updated_at"] = self._now().isoformat()
+
+        self._append_ledger_entry(
+            {
+                "event": "ProposalFinalized",
+                "proposal_id": proposal_id,
+                "status": result,
+                "result": reason,
+                "yes_count": proposal["yes_count"],
+                "no_count": proposal["no_count"],
+                "abstain_count": proposal["abstain_count"],
+                "finalized_by": actor_key,
+            }
+        )
+        self._save()
+        return self._clone(proposal)
+
+    def close_proposal(self, actor_public_key: str, proposal_id: str) -> Dict[str, Any]:
+        actor_key = self.normalize_public_key(actor_public_key)
+        self._require_user(actor_key)
+        proposal = self._require_proposal(proposal_id)
+        if proposal["status"] != "OPEN":
+            raise ArchiveTeamError("Only OPEN proposals can be closed.")
+        if proposal["author_public_key"] != actor_key:
+            raise ArchiveTeamError("Only the proposal author can close it while OPEN.")
+
+        proposal["status"] = "CLOSED"
+        proposal["result"] = "AUTHOR_CLOSED"
+        proposal["finalized_by"] = actor_key
+        proposal["finalized_at"] = self._now().isoformat()
+        proposal["updated_at"] = self._now().isoformat()
+        self._append_ledger_entry(
+            {
+                "event": "ProposalClosed",
+                "proposal_id": proposal_id,
+                "closed_by": actor_key,
+            }
+        )
+        self._save()
+        return self._clone(proposal)
+
     def record_archive_serve(
         self,
         server_public_key: str,
@@ -699,6 +888,7 @@ class ArchiveTeamNetwork:
             "archives": self.archives,
             "collections": self.collections,
             "collection_submissions": self.collection_submissions,
+            "proposals": self.proposals,
             "ledger": self.ledger,
             "online_nodes": self.online_nodes,
             "login_challenges": self.login_challenges,
@@ -714,6 +904,7 @@ class ArchiveTeamNetwork:
         self.archives = raw.get("archives", {})
         self.collections = raw.get("collections", {})
         self.collection_submissions = raw.get("collection_submissions", {})
+        self.proposals = raw.get("proposals", {})
         self.ledger = raw.get("ledger", [])
         self.online_nodes = raw.get("online_nodes", {})
         self.login_challenges = raw.get("login_challenges", {})
@@ -783,6 +974,29 @@ class ArchiveTeamNetwork:
         if not submission:
             raise ArchiveTeamError(f"Unknown collection submission: {submission_id}")
         return submission
+
+    def _require_proposal(self, proposal_id: str) -> Dict[str, Any]:
+        proposal = self.proposals.get(proposal_id)
+        if not proposal:
+            raise ArchiveTeamError(f"Unknown proposal: {proposal_id}")
+        return proposal
+
+    def _recount_proposal_votes(self, proposal: Dict[str, Any]) -> None:
+        yes_count = 0
+        no_count = 0
+        abstain_count = 0
+        for vote_row in proposal["votes"].values():
+            vote = vote_row["vote"]
+            if vote == "YES":
+                yes_count += 1
+            elif vote == "NO":
+                no_count += 1
+            elif vote == "ABSTAIN":
+                abstain_count += 1
+        proposal["yes_count"] = yes_count
+        proposal["no_count"] = no_count
+        proposal["abstain_count"] = abstain_count
+        proposal["updated_at"] = self._now().isoformat()
 
     def _validate_collection_fields(self, name: str, description: str) -> None:
         if not (name or "").strip():

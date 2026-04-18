@@ -286,3 +286,60 @@ def test_safety_filter_blocks_obviously_flagged_urls():
             url="https://blocked.example/safe",
             archive_mode=ArchiveMode.FULL_WARC.value,
         )
+
+
+def test_governance_proposal_voting_and_finalization():
+    network = ArchiveTeamNetwork()
+    author_keys, author = _new_user(network, "author", "US")
+    voter1_keys, voter1 = _new_user(network, "voter1", "US")
+    voter2_keys, voter2 = _new_user(network, "voter2", "US")
+    voter3_keys, voter3 = _new_user(network, "voter3", "US")
+
+    proposal = network.create_proposal(
+        author_public_key=author["display_public_key"],
+        title="Add stricter URL policy checks",
+        description="Propose expanding blocked host controls and review workflow.",
+        change_type="POLICY",
+        target="safety",
+        proposed_patch="Add default blocked hosts list and escalation hooks.",
+        quorum=3,
+        yes_threshold=0.66,
+    )
+    assert proposal["status"] == "OPEN"
+    assert proposal["yes_count"] == 0
+
+    network.cast_proposal_vote(voter1["display_public_key"], proposal["proposal_id"], "YES")
+    network.cast_proposal_vote(voter2["display_public_key"], proposal["proposal_id"], "YES")
+    network.cast_proposal_vote(voter3["display_public_key"], proposal["proposal_id"], "NO")
+
+    finalized = network.finalize_proposal(author["display_public_key"], proposal["proposal_id"])
+    assert finalized["status"] == "APPROVED"
+    assert finalized["result"] == "THRESHOLD_MET"
+    assert finalized["yes_count"] == 2
+    assert finalized["no_count"] == 1
+
+    # votes can no longer be cast after finalization
+    with pytest.raises(ArchiveTeamError):
+        network.cast_proposal_vote(voter1["display_public_key"], proposal["proposal_id"], "YES")
+
+
+def test_governance_proposal_author_close():
+    network = ArchiveTeamNetwork()
+    author_keys, author = _new_user(network, "author", "US")
+    outsider_keys, outsider = _new_user(network, "outsider", "US")
+
+    proposal = network.create_proposal(
+        author_public_key=author["display_public_key"],
+        title="Refactor network sync endpoint",
+        description="Close this one manually as no longer needed.",
+        change_type="FEATURE",
+        target="sync",
+        quorum=2,
+    )
+
+    with pytest.raises(ArchiveTeamError):
+        network.close_proposal(outsider["display_public_key"], proposal["proposal_id"])
+
+    closed = network.close_proposal(author["display_public_key"], proposal["proposal_id"])
+    assert closed["status"] == "CLOSED"
+    assert closed["result"] == "AUTHOR_CLOSED"

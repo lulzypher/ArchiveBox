@@ -138,6 +138,32 @@ class ArchiveTeamAPIView(View):
                     raise ArchiveTeamError("public_key or session token is required.")
                 return self._ok(network.get_user_summary(public_key))
 
+            if method == "POST" and endpoint == "proposals":
+                session_key = self._require_session(network, request)
+                proposal = network.create_proposal(
+                    author_public_key=session_key,
+                    title=body["title"],
+                    description=body.get("description", ""),
+                    change_type=body.get("change_type", "GENERAL"),
+                    target=body.get("target", ""),
+                    proposed_patch=body.get("proposed_patch", ""),
+                    quorum=int(body.get("quorum", 3)),
+                    yes_threshold=float(body.get("yes_threshold", 0.6)),
+                )
+                return self._ok(proposal, status=201)
+
+            if method == "GET" and endpoint == "proposals":
+                status_filter = request.GET.get("status", "")
+                author_public_key = request.GET.get("author_public_key", "")
+                proposals = network.list_proposals(
+                    status=status_filter,
+                    author_public_key=author_public_key,
+                )
+                return self._ok(proposals)
+
+            if endpoint.startswith("proposals/"):
+                return self._proposal_subroute(network, request, method, endpoint, body)
+
             if method == "POST" and endpoint == "collections":
                 session_key = self._require_session(network, request)
                 collection = network.create_collection(
@@ -272,6 +298,56 @@ class ArchiveTeamAPIView(View):
             approve=approve,
         )
         return self._ok(reviewed)
+
+    def _proposal_subroute(
+        self,
+        network: ArchiveTeamNetwork,
+        request: HttpRequest,
+        method: str,
+        endpoint: str,
+        body: Dict[str, Any],
+    ) -> HttpResponse:
+        # proposals/<id>, proposals/<id>/vote, proposals/<id>/finalize, proposals/<id>/close
+        parts = endpoint.split("/")
+        if len(parts) < 2:
+            return self._error("Invalid proposal endpoint.", status=404)
+        proposal_id = parts[1]
+
+        if len(parts) == 2:
+            if method != "GET":
+                return self._error("Unsupported proposal method.", status=405)
+            proposal = network.get_proposal(proposal_id)
+            return self._ok(proposal)
+
+        if method != "POST":
+            return self._error("Unsupported proposal sub-endpoint method.", status=405)
+
+        session_key = self._require_session(network, request)
+        action = parts[2]
+        if action == "vote":
+            proposal = network.cast_proposal_vote(
+                voter_public_key=session_key,
+                proposal_id=proposal_id,
+                vote=body["vote"],
+                note=body.get("note", ""),
+            )
+            return self._ok(proposal)
+
+        if action == "finalize":
+            proposal = network.finalize_proposal(
+                actor_public_key=session_key,
+                proposal_id=proposal_id,
+            )
+            return self._ok(proposal)
+
+        if action == "close":
+            proposal = network.close_proposal(
+                actor_public_key=session_key,
+                proposal_id=proposal_id,
+            )
+            return self._ok(proposal)
+
+        return self._error("Unknown proposal action.", status=404)
 
     @staticmethod
     def _optional_session(network: ArchiveTeamNetwork, request: HttpRequest) -> Optional[str]:

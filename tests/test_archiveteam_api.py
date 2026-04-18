@@ -206,3 +206,124 @@ def test_archiveteam_api_end_to_end(tmp_path, monkeypatch):
 
     # Ensure state file persisted to expected location
     assert state_file.exists()
+
+
+def test_archiveteam_api_governance_proposal_flow(tmp_path, monkeypatch):
+    out_dir = tmp_path / "api-gov-data"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    state_file = out_dir / "archiveteam_state.json"
+    monkeypatch.setenv("ARCHIVETEAM_STATE_FILE", str(state_file))
+    setup_django(out_dir=Path(out_dir), check_db=False, in_memory_db=True)
+    client = Client()
+
+    # register author + voters
+    author_payload = _json(
+        client.post(
+            "/api/archiveteam/register",
+            data=json.dumps({"username": "author", "country": "US", "is_worker": True}),
+            content_type="application/json",
+        )
+    )
+    voter1_payload = _json(
+        client.post(
+            "/api/archiveteam/register",
+            data=json.dumps({"username": "voter1", "country": "US", "is_worker": True}),
+            content_type="application/json",
+        )
+    )
+    voter2_payload = _json(
+        client.post(
+            "/api/archiveteam/register",
+            data=json.dumps({"username": "voter2", "country": "US", "is_worker": True}),
+            content_type="application/json",
+        )
+    )
+
+    from archivebox.archiveteam import ArchiveTeamNode, ArchiveTeamNetwork
+
+    temp_network = ArchiveTeamNetwork(storage_path=str(state_file))
+    author_node = ArchiveTeamNode(
+        network=temp_network,
+        private_key=author_payload["keys"]["private_key"],
+        public_key=author_payload["keys"]["public_key"],
+    )
+    voter1_node = ArchiveTeamNode(
+        network=temp_network,
+        private_key=voter1_payload["keys"]["private_key"],
+        public_key=voter1_payload["keys"]["public_key"],
+    )
+    voter2_node = ArchiveTeamNode(
+        network=temp_network,
+        private_key=voter2_payload["keys"]["private_key"],
+        public_key=voter2_payload["keys"]["public_key"],
+    )
+
+    def login(display_public_key, node):
+        challenge = _json(
+            client.post(
+                "/api/archiveteam/login/challenge",
+                data=json.dumps({"public_key": display_public_key}),
+                content_type="application/json",
+            )
+        )["challenge"]
+        signature = node.sign_login_challenge(challenge)
+        login_resp = client.post(
+            "/api/archiveteam/login/complete",
+            data=json.dumps({"public_key": display_public_key, "signature": signature}),
+            content_type="application/json",
+        )
+        assert login_resp.status_code == 200
+        return _json(login_resp)["session_token"]
+
+    author_session = login(author_payload["user"]["display_public_key"], author_node)
+    voter1_session = login(voter1_payload["user"]["display_public_key"], voter1_node)
+    voter2_session = login(voter2_payload["user"]["display_public_key"], voter2_node)
+
+    proposal_resp = client.post(
+        "/api/archiveteam/proposals",
+        data=json.dumps(
+            {
+                "title": "Add richer moderation tools",
+                "description": "Enable community votes on changes before rollout.",
+                "change_type": "FEATURE",
+                "target": "governance",
+                "quorum": 2,
+                "yes_threshold": 0.5,
+            }
+        ),
+        content_type="application/json",
+        HTTP_X_AT_SESSION=author_session,
+    )
+    assert proposal_resp.status_code == 201
+    proposal = _json(proposal_resp)
+
+    vote1 = client.post(
+        f"/api/archiveteam/proposals/{proposal['proposal_id']}/vote",
+        data=json.dumps({"vote": "YES"}),
+        content_type="application/json",
+        HTTP_X_AT_SESSION=voter1_session,
+    )
+    assert vote1.status_code == 200
+    vote2 = client.post(
+        f"/api/archiveteam/proposals/{proposal['proposal_id']}/vote",
+        data=json.dumps({"vote": "NO"}),
+        content_type="application/json",
+        HTTP_X_AT_SESSION=voter2_session,
+    )
+    assert vote2.status_code == 200
+
+    finalized = client.post(
+        f"/api/archiveteam/proposals/{proposal['proposal_id']}/finalize",
+        data=json.dumps({}),
+        content_type="application/json",
+        HTTP_X_AT_SESSION=author_session,
+    )
+    assert finalized.status_code == 200
+    finalized_payload = _json(finalized)
+    assert finalized_payload["status"] in {"APPROVED", "REJECTED"}
+
+    listed = client.get("/api/archiveteam/proposals")
+    assert listed.status_code == 200
+    rows = _json(listed)
+    assert any(row["proposal_id"] == proposal["proposal_id"] for row in rows)
