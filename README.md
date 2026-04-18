@@ -31,6 +31,66 @@ curl -sSL 'https://get.archivebox.io' | sh    # (or see pip/brew/Docker instruct
 <hr/>
 </div>
 
+## 🚀 ArchiveTeam NFT (Decentralized Archiving Layer)
+
+This repository now includes an actively developed decentralized coordination layer for **archiveteam.nft** built on top of ArchiveBox.
+
+### What’s implemented right now
+
+- **Decentralized archiving network model** (`archivebox/archiveteam`)
+  - user keypairs + `AT`-prefixed display keys
+  - login challenge/signature flow
+  - request/claim/fulfill flow with `FULL_WARC` / `ZIP_WARC`
+  - 24h pin window + requester handoff
+  - online-only availability search
+  - ratio scoring (`green / yellow / red`)
+  - hash-chained ledger records for fulfill/serve events
+- **Collections + social workflows**
+  - create/edit/delete collections
+  - private/public visibility controls
+  - owner-moderated submissions (approve/deny)
+  - fork/copy collections
+- **Safety policy MVP**
+  - configurable blocked URL terms + blocked hosts
+  - request intake rejects obvious illegal-content markers
+- **Phase 2 HTTP API**
+  - JSON API under `/api/archiveteam/...` for auth, requests, archives, ratio, and collections
+
+### Quick local demo (ArchiveTeam API)
+
+```bash
+# from repository root
+source .venv/bin/activate
+
+# run existing test coverage for the decentralized layer + API
+pytest -q tests/test_archiveteam_mvp.py tests/test_archiveteam_api.py
+```
+
+### Key API routes (Phase 2)
+
+```text
+POST   /api/archiveteam/register
+POST   /api/archiveteam/login/challenge
+POST   /api/archiveteam/login/complete
+POST   /api/archiveteam/requests
+POST   /api/archiveteam/requests/claim
+POST   /api/archiveteam/requests/fulfill
+GET    /api/archiveteam/archives/search
+GET    /api/archiveteam/ratio
+
+POST   /api/archiveteam/collections
+GET    /api/archiveteam/collections
+GET    /api/archiveteam/collections/<id>
+PATCH  /api/archiveteam/collections/<id>
+DELETE /api/archiveteam/collections/<id>
+POST   /api/archiveteam/collections/<id>/submit
+POST   /api/archiveteam/submissions/<id>/review
+POST   /api/archiveteam/collections/<id>/fork
+```
+
+> ⚠️ Trust & Safety note:
+> The current safety filter is a **first-pass blocklist** and is not sufficient as a complete CSAM defense. Production deployment should add trusted hash databases, advanced media classification, strict escalation/reporting workflows, and legal compliance controls.
+
 **ArchiveBox is a powerful, self-hosted internet archiving solution to collect, save, and view websites offline.**
 
 Without active preservation effort, everything on the internet eventually dissapears or degrades. Archive.org does a great job as a free central archive, but they require all archives to be public, and they can't save every type of content.

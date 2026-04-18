@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ArchiveTeam NFT — Decentralized Web Archiving</title>
+    <meta name="description" content="ArchiveTeam NFT is a decentralized request-and-archive network where workers preserve web pages, pin results, and maintain healthy contribution ratios." />
+    <link rel="icon" href="icon.png" />
+    <link rel="stylesheet" href="assets/css/archiveteam.css" />
+</head>
+<body>
+    <div class="progress" id="progress"></div>
+    <div class="bg-glow" id="bg-glow"></div>
+
+    <header class="site-header container">
+        <a href="#" class="logo">
+            <span class="logo-dot"></span>
+            <span>ARCHIVETEAM.NFT</span>
+        </a>
+        <nav class="nav">
+            <a href="#how">How it works</a>
+            <a href="#features">Features</a>
+            <a href="#api">API</a>
+            <a href="https://github.com/ArchiveBox/ArchiveBox" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </nav>
+    </header>
+
+    <main>
+        <section class="hero container reveal">
+            <p class="eyebrow">Decentralized Archiving Network</p>
+            <h1>Archive requests.<br/>Share the load.<br/>Anchor proof on-chain.</h1>
+            <p class="lead">
+                ArchiveTeam NFT turns web preservation into a coordinated peer network.
+                Anyone with a node can request, process, host, and serve archives while keeping a healthy contribution ratio.
+            </p>
+            <div class="cta-row">
+                <a class="button primary" href="https://github.com/ArchiveBox/ArchiveBox" target="_blank" rel="noopener noreferrer">View GitHub</a>
+                <a class="button ghost" href="#features">Explore Features</a>
+            </div>
+            <div class="stats-grid">
+                <article class="stat-card tilt reveal">
+                    <p class="stat-label">Pin Window</p>
+                    <p class="stat-value" data-count="24">24h</p>
+                    <p class="stat-copy">Initial host responsibility before requester handoff.</p>
+                </article>
+                <article class="stat-card tilt reveal">
+                    <p class="stat-label">Archive Modes</p>
+                    <p class="stat-value" data-count="2">2</p>
+                    <p class="stat-copy">FULL_WARC and ZIP_WARC capture profiles.</p>
+                </article>
+                <article class="stat-card tilt reveal">
+                    <p class="stat-label">Collection Privacy</p>
+                    <p class="stat-value">Owner-controlled</p>
+                    <p class="stat-copy">Public/private and moderated submissions.</p>
+                </article>
+            </div>
+        </section>
+
+        <section id="how" class="section container">
+            <div class="section-head reveal">
+                <p class="eyebrow">Flow</p>
+                <h2>How ArchiveTeam NFT works</h2>
+            </div>
+            <div class="timeline">
+                <article class="timeline-item reveal tilt">
+                    <h3>1) Request</h3>
+                    <p>A worker submits a URL and preferences like country and archive mode.</p>
+                </article>
+                <article class="timeline-item reveal tilt">
+                    <h3>2) Claim + Fulfill</h3>
+                    <p>An eligible online node claims the task, captures the site, and publishes hash + storage URI.</p>
+                </article>
+                <article class="timeline-item reveal tilt">
+                    <h3>3) Serve + Reputation</h3>
+                    <p>Peers serve available archives, and ratio scoring rewards users who contribute more than they consume.</p>
+                </article>
+            </div>
+        </section>
+
+        <section id="features" class="section container">
+            <div class="section-head reveal">
+                <p class="eyebrow">Capabilities</p>
+                <h2>Built for collaborative preservation</h2>
+            </div>
+            <div class="feature-grid">
+                <article class="feature-card reveal tilt">
+                    <h3>Collections</h3>
+                    <p>Create, edit, delete, and fork collections with names, descriptions, and archive sets.</p>
+                </article>
+                <article class="feature-card reveal tilt">
+                    <h3>Moderated submissions</h3>
+                    <p>Collection owners can enable submissions and approve or deny each incoming archive.</p>
+                </article>
+                <article class="feature-card reveal tilt">
+                    <h3>Safety policy</h3>
+                    <p>Request intake applies configurable blocked terms/hosts to reject obvious illegal-content markers.</p>
+                </article>
+                <article class="feature-card reveal tilt">
+                    <h3>Global matching</h3>
+                    <p>Workers can be selected by country preference while search only returns currently available archives.</p>
+                </article>
+            </div>
+        </section>
+
+        <section id="api" class="section container">
+            <div class="section-head reveal">
+                <p class="eyebrow">Phase 2 API</p>
+                <h2>HTTP endpoints powering archiveteam.nft</h2>
+            </div>
+            <pre class="code-panel reveal"><code>POST   /api/archiveteam/register
+POST   /api/archiveteam/login/challenge
+POST   /api/archiveteam/login/complete
+POST   /api/archiveteam/requests
+POST   /api/archiveteam/requests/claim
+POST   /api/archiveteam/requests/fulfill
+POST   /api/archiveteam/collections
+POST   /api/archiveteam/collections/&lt;id&gt;/submit
+POST   /api/archiveteam/submissions/&lt;id&gt;/review
+POST   /api/archiveteam/collections/&lt;id&gt;/fork</code></pre>
+            <p class="muted reveal">
+                Built in this repository and ready for frontend integration.
+            </p>
+        </section>
+    </main>
+
+    <footer class="site-footer container reveal">
+        <p>ArchiveTeam NFT — community-powered, verifiable web preservation.</p>
+    </footer>
+
+    <script>
+        (() => {
+            const glow = document.getElementById('bg-glow');
+            const progress = document.getElementById('progress');
+            const revealItems = document.querySelectorAll('.reveal');
+            const counters = document.querySelectorAll('[data-count]');
+
+            window.addEventListener('mousemove', (event) => {
+                glow.style.setProperty('--x', `${event.clientX}px`);
+                glow.style.setProperty('--y', `${event.clientY}px`);
+            });
+
+            const onScroll = () => {
+                const max = document.documentElement.scrollHeight - window.innerHeight;
+                const value = max > 0 ? (window.scrollY / max) * 100 : 0;
+                progress.style.width = `${value}%`;
+            };
+            window.addEventListener('scroll', onScroll, { passive: true });
+            onScroll();
+
+            const io = new IntersectionObserver((entries) => {
+                entries.forEach((entry) => {
+                    if (!entry.isIntersecting) return;
+                    entry.target.classList.add('visible');
+                    if (entry.target.dataset.count && !entry.target.dataset.animated) {
+                        entry.target.dataset.animated = 'true';
+                        const target = Number(entry.target.dataset.count);
+                        const startTime = performance.now();
+                        const start = 0;
+                        const duration = 900;
+                        const tick = (time) => {
+                            const t = Math.min((time - startTime) / duration, 1);
+                            const value = Math.round(start + (target - start) * t);
+                            entry.target.textContent = entry.target.textContent.includes('h') ? `${value}h` : `${value}`;
+                            if (t < 1) requestAnimationFrame(tick);
+                        };
+                        requestAnimationFrame(tick);
+                    }
+                });
+            }, { threshold: 0.18 });
+
+            revealItems.forEach((item) => io.observe(item));
+            counters.forEach((counter) => io.observe(counter));
+        })();
+    </script>
+</body>
+</html>
