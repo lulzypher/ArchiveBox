@@ -1,0 +1,2 @@
+"""ArchiveBox tray app package."""
+
