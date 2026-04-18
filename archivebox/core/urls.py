@@ -9,6 +9,7 @@ from django.http import HttpRequest
 from archivebox.misc.serve_static import serve_static
 
 from archivebox.core.admin_site import archivebox_admin
+from archivebox.core.archiveteam_api import ArchiveTeamAPIView
 from archivebox.core.views import (
     HomepageView,
     SnapshotView,
@@ -23,14 +24,11 @@ from archivebox.core.views import (
 )
 
 
-# GLOBAL_CONTEXT doesn't work as-is, disabled for now: https://github.com/ArchiveBox/ArchiveBox/discussions/1306
-# from archivebox.config import VERSION, VERSIONS_AVAILABLE, CAN_UPGRADE
-# GLOBAL_CONTEXT = {'VERSION': VERSION, 'VERSIONS_AVAILABLE': VERSIONS_AVAILABLE, 'CAN_UPGRADE': CAN_UPGRADE}
-
-
 # print('DEBUG', settings.DEBUG)
 
 urlpatterns = [
+    path("api/archiveteam/", ArchiveTeamAPIView.as_view(), {"endpoint": ""}),
+    path("api/archiveteam/<path:endpoint>", ArchiveTeamAPIView.as_view()),
     re_path(r"^static/(?P<path>.*)$", serve_static),
     # re_path(r"^media/(?P<path>.*)$", static.serve, {"document_root": settings.MEDIA_ROOT}),
     path("robots.txt", static.serve, {"document_root": settings.STATICFILES_DIRS[0], "path": "robots.txt"}),
