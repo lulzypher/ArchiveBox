@@ -6,21 +6,34 @@ env:
   PYTHONIOENCODING: utf-8
   PYTHONLEGACYWINDOWSSTDIO: utf-8
   USE_COLOR: False
+  UV_NO_SOURCES: "1"
 
 jobs:
   python_tests:
     runs-on: ${{ matrix.os }}
+    env:
+      PYTHONPATH: ${{ github.workspace }}/abxpkg:${{ github.workspace }}/abx-plugins:${{ github.workspace }}/abx-dl
 
     strategy:
       matrix:
-        os: [ubuntu-20.04, macos-latest, windows-latest]
-        python: [3.9]
+        os: [ubuntu-22.04]
+        # os: [ubuntu-22.04, macos-latest, windows-latest]
+        python: ["3.13"]
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 1
+
+      - name: Clone abxpkg
+        run: git clone --depth=1 https://github.com/ArchiveBox/abxpkg.git abxpkg
+
+      - name: Clone abx-plugins
+        run: git clone --depth=1 https://github.com/ArchiveBox/abx-plugins.git abx-plugins
+
+      - name: Clone abx-dl
+        run: git clone --depth=1 https://github.com/ArchiveBox/abx-dl.git abx-dl
 
       ### Setup Python & JS Languages
       - name: Set up Python ${{ matrix.python }}
@@ -29,55 +42,34 @@ jobs:
           python-version: ${{ matrix.python }}
           architecture: x64
 
-      - name: Set up Node JS 14.7.0
-        uses: actions/setup-node@v3
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
-          node-version: 18.12.0
+          version: "latest"
 
-      - name: Setup PDM
-        uses: pdm-project/setup-pdm@v3
+      - name: Set up Node JS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       ### Install Python & JS Dependencies
-      - name: Get pip cache dir
-        id: pip-cache
-        run: |
-          echo "::set-output name=dir::$(pip cache dir)"
-
-      - name: Cache pip
-        uses: actions/cache@v2
-        id: cache-pip
+      - name: Cache uv
+        uses: actions/cache@v3
         with:
-          path: ${{ steps.pip-cache.outputs.dir }}
-          key: ${{ runner.os }}-${{ matrix.python }}-venv-${{ hashFiles('setup.py') }}
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-${{ matrix.python }}-uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.python }}-venv-
+            ${{ runner.os }}-${{ matrix.python }}-uv-
 
-      - name: Install pip dependencies
-        run: |
-          python -m pip install --upgrade pip setuptools wheel pytest bottle build
-          ./bin/build_pip.sh
-          pdm install
-
-      - name: Get npm cache dir
-        id: npm-cache
-        run: |
-          echo "::set-output name=dir::$GITHUB_WORKSPACE/node_modules"
-
-      - name: Cache npm
-        uses: actions/cache@v2
-        id: cache-npm
+      - uses: awalsh128/cache-apt-pkgs-action@latest
         with:
-          path: ${{ steps.npm-cache.outputs.dir }}
-          key: ${{ runner.os }}-node_modules-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node_modules
+          packages: ripgrep build-essential python3-dev python3-setuptools libssl-dev libldap2-dev libsasl2-dev zlib1g-dev libatomic1 python3-minimal gnupg2 curl wget python3-ldap python3-msgpack python3-mutagen python3-regex python3-pycryptodome procps
+          version: 1.0
 
-      - name: Install npm requirements
+      - name: Install dependencies with uv
         run: |
-          npm install
-          echo "SINGLEFILE_BINARY=$GITHUB_WORKSPACE/node_modules/.bin/single-file" >> $GITHUB_ENV
-          echo "READABILITY_BINARY=$GITHUB_WORKSPACE/node_modules/.bin/readability-extractor" >> $GITHUB_ENV
-          echo "MERCURY_BINARY=$GITHUB_WORKSPACE/node_modules/.bin/mercury-parser" >> $GITHUB_ENV
+          uv sync --dev --all-extras --no-sources
+          uv pip install -e ./abxpkg -e ./abx-plugins[dev] -e ./abx-dl
 
       ### Run the tests
       - name: Directory listing for debugging
@@ -87,19 +79,30 @@ jobs:
 
       - name: Archivebox version
         run: |
-          archivebox version
+          mkdir -p tests/out/data
+          DATA_DIR="$PWD/tests/out/data" uv run --no-sync --no-sources archivebox version
 
       - name: Test built package with pytest
         # TODO: remove this exception for windows once we get tests passing on that platform
         if: ${{ !contains(matrix.os, 'windows') }}
         run: |
-          python -m pytest -s --basetemp=tests/out --ignore=archivebox/vendor --ignore=deb_dist --ignore=pip_dist --ignore=brew_dist
+          mkdir -p tests/out
+          uv run --no-sync --no-sources pytest -s archivebox/tests --basetemp=tests/out --ignore=archivebox/pkgs
+
+      - name: Run plugin tests
+        if: ${{ !contains(matrix.os, 'windows') }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
+          API_KEY_2CAPTCHA: ${{ secrets.TWOCAPTCHA_API_KEY }}
+        run: |
+          uv run --no-sync --no-sources bash ./bin/test_plugins.sh --no-coverage
 
   docker_tests:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 1

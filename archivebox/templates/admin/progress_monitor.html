@@ -1,0 +1,1144 @@
+<style>
+    /* Progress Monitor Container */
+    #progress-monitor {
+        background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+        color: #c9d1d9;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+        font-size: 12px;
+        border-bottom: 1px solid #30363d;
+        position: relative;
+        z-index: 100;
+    }
+    #progress-monitor.hidden {
+        display: none;
+    }
+    #progress-monitor .tree-container {
+        max-height: 350px;
+        overflow-y: auto;
+    }
+
+    /* Header Bar */
+    #progress-monitor .header-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 16px;
+        background: rgba(0,0,0,0.2);
+        border-bottom: 1px solid #30363d;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+    }
+    #progress-monitor .header-left {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+    }
+    #progress-monitor .header-right {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    /* Orchestrator Status */
+    #progress-monitor .orchestrator-status {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    #progress-monitor .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+    #progress-monitor .status-dot.running {
+        background: #3fb950;
+        box-shadow: 0 0 8px #3fb950;
+        animation: pulse 2s infinite;
+    }
+    #progress-monitor .status-dot.idle {
+        background: #d29922;
+        box-shadow: 0 0 4px #d29922;
+    }
+    #progress-monitor .status-dot.stopped {
+        background: #6e7681;
+    }
+    #progress-monitor .status-dot.flash {
+        animation: flash 0.3s ease-out;
+    }
+    @keyframes pulse {
+        0%, 100% { opacity: 1; box-shadow: 0 0 8px #3fb950; }
+        50% { opacity: 0.6; box-shadow: 0 0 4px #3fb950; }
+    }
+    @keyframes flash {
+        0% { transform: scale(1.5); }
+        100% { transform: scale(1); }
+    }
+
+    /* Stats */
+    #progress-monitor .stats {
+        display: flex;
+        gap: 16px;
+    }
+    #progress-monitor .stat {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+    #progress-monitor .stat-label {
+        color: #8b949e;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    #progress-monitor .stat-value {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+    }
+    #progress-monitor .stat-value.success { color: #3fb950; }
+    #progress-monitor .stat-value.error { color: #f85149; }
+    #progress-monitor .stat-value.warning { color: #d29922; }
+    #progress-monitor .stat-value.info { color: #58a6ff; }
+    #progress-monitor .stat.clickable {
+        cursor: pointer;
+        padding: 2px 6px;
+        margin: -2px -6px;
+        border-radius: 4px;
+        transition: background 0.2s;
+    }
+    #progress-monitor .stat.clickable:hover {
+        background: rgba(255,255,255,0.1);
+    }
+    #progress-monitor .stat.clickable:active {
+        background: rgba(255,255,255,0.2);
+    }
+
+    /* Toggle Button */
+    #progress-monitor .toggle-btn {
+        background: transparent;
+        border: 1px solid #30363d;
+        color: #8b949e;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+        transition: all 0.2s;
+    }
+    #progress-monitor .toggle-btn:hover {
+        background: #21262d;
+        color: #c9d1d9;
+        border-color: #8b949e;
+    }
+    #progress-monitor .cancel-item-btn {
+        background: transparent;
+        border: 1px solid #30363d;
+        color: #f85149;
+        cursor: pointer;
+        padding: 2px 6px;
+        border-radius: 6px;
+        font-size: 11px;
+        line-height: 1;
+        transition: all 0.2s;
+        flex-shrink: 0;
+    }
+    #progress-monitor .cancel-item-btn:hover {
+        background: rgba(248, 81, 73, 0.12);
+        border-color: #f85149;
+        color: #ff7b72;
+    }
+    #progress-monitor .cancel-item-btn.is-busy {
+        opacity: 0.6;
+        cursor: wait;
+        border-color: #6e7681;
+        color: #6e7681;
+    }
+
+    /* Tree Container */
+    #progress-monitor .tree-container {
+        padding: 12px 16px;
+    }
+    #progress-monitor.collapsed .tree-container {
+        display: none;
+    }
+
+    /* Idle Message */
+    #progress-monitor .idle-message {
+        color: #8b949e;
+        font-style: italic;
+        padding: 8px 0;
+        text-align: center;
+    }
+
+    /* Crawl Item */
+    #progress-monitor .crawl-item {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        margin-bottom: 12px;
+        overflow: hidden;
+    }
+    #progress-monitor .crawl-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        background: rgba(0,0,0,0.2);
+    }
+    #progress-monitor .crawl-header:hover {
+        background: rgba(88, 166, 255, 0.1);
+    }
+    #progress-monitor .crawl-header-link {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex: 1;
+        min-width: 0;
+        cursor: pointer;
+        text-decoration: none;
+        color: inherit;
+    }
+    #progress-monitor a.crawl-header-link:visited {
+        color: inherit;
+    }
+    #progress-monitor .crawl-icon {
+        font-size: 16px;
+        width: 20px;
+        text-align: center;
+    }
+    #progress-monitor .crawl-info {
+        flex: 1;
+        min-width: 0;
+    }
+    #progress-monitor .crawl-label {
+        font-weight: 600;
+        color: #58a6ff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    #progress-monitor .crawl-meta {
+        font-size: 11px;
+        color: #8b949e;
+        margin-top: 2px;
+    }
+    #progress-monitor .crawl-stats {
+        display: flex;
+        gap: 12px;
+        font-size: 11px;
+    }
+
+    /* Progress Bar */
+    #progress-monitor .progress-bar-container {
+        height: 4px;
+        background: #21262d;
+        border-radius: 2px;
+        overflow: hidden;
+        position: relative;
+    }
+    #progress-monitor .progress-bar {
+        height: 100%;
+        border-radius: 2px;
+        transition: width 0.5s ease-out;
+        position: relative;
+    }
+    #progress-monitor .progress-bar.crawl {
+        background: linear-gradient(90deg, #238636 0%, #3fb950 100%);
+    }
+    #progress-monitor .progress-bar.snapshot {
+        background: linear-gradient(90deg, #1f6feb 0%, #58a6ff 100%);
+    }
+    #progress-monitor .progress-bar.extractor {
+        background: linear-gradient(90deg, #8957e5 0%, #a371f7 100%);
+    }
+    #progress-monitor .progress-bar.indeterminate {
+        background: linear-gradient(90deg, transparent 0%, #58a6ff 50%, transparent 100%);
+        animation: indeterminate 1.5s infinite linear;
+        width: 30% !important;
+    }
+    @keyframes indeterminate {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(400%); }
+    }
+
+    /* Crawl Body */
+    #progress-monitor .crawl-body {
+        padding: 0 14px 14px;
+    }
+    #progress-monitor .crawl-progress {
+        padding: 10px 14px;
+        border-bottom: 1px solid #21262d;
+    }
+
+    /* Snapshot List */
+    #progress-monitor .snapshot-list {
+        margin-top: 8px;
+    }
+    #progress-monitor .snapshot-item {
+        background: #0d1117;
+        border: 1px solid #21262d;
+        border-radius: 6px;
+        margin-bottom: 8px;
+        overflow: hidden;
+    }
+    #progress-monitor .snapshot-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+    }
+    #progress-monitor .snapshot-header:hover {
+        background: rgba(88, 166, 255, 0.05);
+    }
+    #progress-monitor .snapshot-header-link {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex: 1;
+        min-width: 0;
+        cursor: pointer;
+        text-decoration: none;
+        color: inherit;
+    }
+    #progress-monitor a.snapshot-header-link:visited {
+        color: inherit;
+    }
+    #progress-monitor .snapshot-icon {
+        font-size: 14px;
+        width: 18px;
+        text-align: center;
+        color: #58a6ff;
+    }
+    #progress-monitor .snapshot-info {
+        flex: 1;
+        min-width: 0;
+    }
+    #progress-monitor .snapshot-url {
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 11px;
+        color: #c9d1d9;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    #progress-monitor .snapshot-meta {
+        font-size: 10px;
+        color: #8b949e;
+        margin-top: 2px;
+    }
+    #progress-monitor .snapshot-progress {
+        padding: 0 12px 8px;
+    }
+
+    /* Extractor List - Compact Badge Layout */
+    #progress-monitor .extractor-list {
+        padding: 8px 12px;
+        background: rgba(0,0,0,0.2);
+        border-top: 1px solid #21262d;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+    #progress-monitor .extractor-badge {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 10px;
+        background: #21262d;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+    #progress-monitor .extractor-badge .progress-fill {
+        position: absolute;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        z-index: 0;
+        transition: width 0.3s ease-out;
+    }
+    #progress-monitor .extractor-badge .badge-content {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+    #progress-monitor .extractor-badge.queued {
+        color: #8b949e;
+    }
+    #progress-monitor .extractor-badge.queued .progress-fill {
+        background: rgba(110, 118, 129, 0.2);
+        width: 0%;
+    }
+    #progress-monitor .extractor-badge.started {
+        color: #d29922;
+    }
+    #progress-monitor .extractor-badge.started .progress-fill {
+        background: rgba(210, 153, 34, 0.3);
+        animation: progress-pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes progress-pulse {
+        0%, 100% { opacity: 0.5; }
+        50% { opacity: 1; }
+    }
+    #progress-monitor .extractor-badge.succeeded {
+        color: #3fb950;
+    }
+    #progress-monitor .extractor-badge.succeeded .progress-fill {
+        background: rgba(63, 185, 80, 0.25);
+        width: 100%;
+    }
+    #progress-monitor .extractor-badge.failed {
+        color: #f85149;
+    }
+    #progress-monitor .extractor-badge.failed .progress-fill {
+        background: rgba(248, 81, 73, 0.25);
+        width: 100%;
+    }
+    #progress-monitor .extractor-badge.backoff {
+        color: #b8860b;
+    }
+    #progress-monitor .extractor-badge.backoff .progress-fill {
+        background: rgba(210, 153, 34, 0.2);
+        width: 30%;
+    }
+    #progress-monitor .extractor-badge.skipped {
+        color: #6e7681;
+    }
+    #progress-monitor .extractor-badge.skipped .progress-fill {
+        background: rgba(110, 118, 129, 0.15);
+        width: 100%;
+    }
+    #progress-monitor .extractor-badge .badge-icon {
+        font-size: 10px;
+    }
+    #progress-monitor .extractor-badge.started .badge-icon {
+        animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+
+    /* Status Badge */
+    #progress-monitor .status-badge {
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 10px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }
+    #progress-monitor .status-badge.queued {
+        background: #21262d;
+        color: #8b949e;
+    }
+    #progress-monitor .status-badge.started {
+        background: rgba(210, 153, 34, 0.2);
+        color: #d29922;
+    }
+    #progress-monitor .status-badge.sealed,
+    #progress-monitor .status-badge.succeeded {
+        background: rgba(63, 185, 80, 0.2);
+        color: #3fb950;
+    }
+    #progress-monitor .status-badge.failed {
+        background: rgba(248, 81, 73, 0.2);
+        color: #f85149;
+    }
+    #progress-monitor .status-badge.backoff {
+        background: rgba(210, 153, 34, 0.15);
+        color: #b8860b;
+    }
+    #progress-monitor .status-badge.unknown {
+        background: #21262d;
+        color: #6e7681;
+    }
+
+    /* Thumbnail Strip */
+    #progress-monitor .thumbnail-strip {
+        display: flex;
+        gap: 8px;
+        padding: 10px 16px;
+        background: rgba(0,0,0,0.15);
+        border-top: 1px solid #21262d;
+        overflow-x: auto;
+        scrollbar-width: thin;
+        scrollbar-color: #30363d #0d1117;
+    }
+    #progress-monitor .thumbnail-strip::-webkit-scrollbar {
+        height: 6px;
+    }
+    #progress-monitor .thumbnail-strip::-webkit-scrollbar-track {
+        background: #0d1117;
+    }
+    #progress-monitor .thumbnail-strip::-webkit-scrollbar-thumb {
+        background: #30363d;
+        border-radius: 3px;
+    }
+    #progress-monitor .thumbnail-strip::-webkit-scrollbar-thumb:hover {
+        background: #484f58;
+    }
+    #progress-monitor .thumbnail-strip.empty {
+        display: none;
+    }
+    #progress-monitor .thumbnail-item {
+        flex-shrink: 0;
+        position: relative;
+        width: 64px;
+        height: 48px;
+        border-radius: 4px;
+        overflow: hidden;
+        border: 1px solid #30363d;
+        background: #161b22;
+        cursor: pointer;
+        transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+    }
+    #progress-monitor .thumbnail-item:hover {
+        transform: scale(1.1);
+        border-color: #58a6ff;
+        box-shadow: 0 0 12px rgba(88, 166, 255, 0.3);
+        z-index: 10;
+    }
+    #progress-monitor .thumbnail-item.new {
+        animation: thumbnail-pop 0.4s ease-out;
+    }
+    @keyframes thumbnail-pop {
+        0% { transform: scale(0.5); opacity: 0; }
+        50% { transform: scale(1.15); }
+        100% { transform: scale(1); opacity: 1; }
+    }
+    #progress-monitor .thumbnail-item img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+    #progress-monitor .thumbnail-item .thumbnail-fallback {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 20px;
+        color: #8b949e;
+        background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
+    }
+    #progress-monitor .thumbnail-item .thumbnail-plugin {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 2px 4px;
+        font-size: 8px;
+        font-weight: 600;
+        text-transform: uppercase;
+        color: #fff;
+        background: rgba(0,0,0,0.7);
+        text-align: center;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    #progress-monitor .thumbnail-label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 4px;
+        color: #8b949e;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        flex-shrink: 0;
+    }
+    #progress-monitor .pid-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 6px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 600;
+        color: #8b949e;
+        background: rgba(148, 163, 184, 0.12);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        letter-spacing: 0.2px;
+        white-space: nowrap;
+    }
+    #progress-monitor .pid-label.compact {
+        padding: 1px 5px;
+        font-size: 9px;
+    }
+
+</style>
+
+<div id="progress-monitor">
+    <div class="header-bar">
+        <div class="header-left">
+            <div class="orchestrator-status">
+                <span class="status-dot stopped" id="orchestrator-dot"></span>
+                <span id="orchestrator-text">Runner stopped</span>
+                <span class="pid-label compact" id="orchestrator-pid" style="display:none;"></span>
+            </div>
+            <div class="stats">
+                <div class="stat">
+                    <span class="stat-label">Processes</span>
+                    <span class="stat-value info" id="worker-count">0</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Queued</span>
+                    <span class="stat-value warning" id="total-queued">0</span>
+                </div>
+                <div class="stat clickable" id="stat-succeeded" title="Click to reset counter">
+                    <span class="stat-label">Done</span>
+                    <span class="stat-value success" id="total-succeeded">0</span>
+                </div>
+                <div class="stat clickable" id="stat-failed" title="Click to reset counter">
+                    <span class="stat-label">Failed</span>
+                    <span class="stat-value error" id="total-failed">0</span>
+                </div>
+            </div>
+        </div>
+        <div class="header-right">
+            <button class="toggle-btn" id="progress-collapse" title="Toggle details">Details</button>
+        </div>
+    </div>
+
+    <div class="tree-container" id="tree-container">
+        <div class="idle-message" id="idle-message">No active crawls</div>
+        <div id="crawl-tree"></div>
+    </div>
+</div>
+
+<script>
+(function() {
+    const monitor = document.getElementById('progress-monitor');
+    const collapseBtn = document.getElementById('progress-collapse');
+    const treeContainer = document.getElementById('tree-container');
+    const crawlTree = document.getElementById('crawl-tree');
+    const idleMessage = document.getElementById('idle-message');
+    const thumbnailStrip = null;
+
+    let pollInterval = null;
+    let pollDelayMs = 1000;
+    let idleTicks = 0;
+    let isCollapsed = localStorage.getItem('progress-monitor-collapsed') === 'true';
+    let knownThumbnailIds = new Set();
+
+    // Baselines for resettable counters
+    let succeededBaseline = parseInt(localStorage.getItem('progress-succeeded-baseline') || '0');
+    let failedBaseline = parseInt(localStorage.getItem('progress-failed-baseline') || '0');
+
+    function getApiKey() {
+        return (window.ARCHIVEBOX_API_KEY || '').trim();
+    }
+
+    function buildApiUrl(path) {
+        const apiKey = getApiKey();
+        if (!apiKey) return path;
+        const sep = path.includes('?') ? '&' : '?';
+        return `${path}${sep}api_key=${encodeURIComponent(apiKey)}`;
+    }
+
+    function buildApiHeaders() {
+        const headers = { 'Content-Type': 'application/json' };
+        const apiKey = getApiKey();
+        if (apiKey) headers['X-ArchiveBox-API-Key'] = apiKey;
+        return headers;
+    }
+    let lastSucceeded = 0;
+    let lastFailed = 0;
+
+    // Click handlers for resetting counters
+    document.getElementById('stat-succeeded').addEventListener('click', function() {
+        succeededBaseline = lastSucceeded;
+        localStorage.setItem('progress-succeeded-baseline', succeededBaseline);
+        document.getElementById('total-succeeded').textContent = '0';
+    });
+    document.getElementById('stat-failed').addEventListener('click', function() {
+        failedBaseline = lastFailed;
+        localStorage.setItem('progress-failed-baseline', failedBaseline);
+        document.getElementById('total-failed').textContent = '0';
+    });
+
+    function formatUrl(url) {
+        if (!url) return '(no URL)';
+        try {
+            const u = new URL(url);
+            return u.hostname + u.pathname.substring(0, 30) + (u.pathname.length > 30 ? '...' : '');
+        } catch {
+            return String(url).substring(0, 50) + (String(url).length > 50 ? '...' : '');
+        }
+    }
+
+    function getPluginIcon(plugin) {
+        const icons = {
+            'screenshot': '&#128247;',
+            'favicon': '&#11088;',
+            'dom': '&#128196;',
+            'pdf': '&#128462;',
+            'title': '&#128221;',
+            'headers': '&#128203;',
+            'singlefile': '&#128230;',
+            'readability': '&#128214;',
+            'mercury': '&#9884;',
+            'wget': '&#128229;',
+            'media': '&#127909;',
+        };
+        return icons[plugin] || '&#128196;';
+    }
+
+
+    function renderThumbnail(thumb, isNew) { return null; }
+    function updateThumbnails(thumbnails) {}
+
+    function renderExtractor(extractor) {
+        const icon = extractor.status === 'started' ? '&#8635;' :
+                    extractor.status === 'succeeded' ? '&#10003;' :
+                    extractor.status === 'failed' ? '&#10007;' :
+                    extractor.status === 'backoff' ? '&#8987;' :
+                    extractor.status === 'skipped' ? '&#8674;' : '&#9675;';
+        const progress = typeof extractor.progress === 'number'
+            ? Math.max(0, Math.min(100, extractor.progress))
+            : null;
+        const progressStyle = progress !== null ? ` style="width: ${progress}%;"` : '';
+        const pidHtml = extractor.status === 'started' && extractor.pid ? `<span class="pid-label compact">pid ${extractor.pid}</span>` : '';
+
+        return `
+            <span class="extractor-badge ${extractor.status || 'queued'}">
+                <span class="progress-fill"${progressStyle}></span>
+                <span class="badge-content">
+                    <span class="badge-icon">${icon}</span>
+                    <span>${extractor.label || extractor.plugin || 'unknown'}</span>
+                    ${pidHtml}
+                </span>
+            </span>
+        `;
+    }
+
+    function renderSnapshot(snapshot, crawlId) {
+        const statusIcon = snapshot.status === 'started' ? '&#8635;' : '&#128196;';
+        const adminUrl = `/admin/core/snapshot/${snapshot.id || 'unknown'}/change/`;
+        const canCancel = snapshot.status === 'queued';
+        const cancelBtn = canCancel
+            ? `<button class="cancel-item-btn" data-cancel-type="snapshot" data-snapshot-id="${snapshot.id}" data-label="✕" title="Cancel snapshot">✕</button>`
+            : '';
+        const snapshotPidHtml = snapshot.worker_pid ? `<span class="pid-label compact">pid ${snapshot.worker_pid}</span>` : '';
+
+        let extractorHtml = '';
+        if (snapshot.all_plugins && snapshot.all_plugins.length > 0) {
+            // Sort plugins alphabetically by name to prevent reordering on updates
+            const sortedExtractors = [...snapshot.all_plugins].sort((a, b) =>
+                (a.plugin || '').localeCompare(b.plugin || '')
+            );
+            extractorHtml = `
+                <div class="extractor-list">
+                    ${sortedExtractors.map(e => renderExtractor(e)).join('')}
+                </div>
+            `;
+        }
+
+        const hasProcessEntries = (snapshot.all_plugins || []).some(extractor => extractor.source === 'process');
+        const hasArchiveResults = (snapshot.all_plugins || []).some(extractor => extractor.source === 'archiveresult');
+        const processOnly = hasProcessEntries && !hasArchiveResults;
+        const runningProcessCount = (snapshot.all_plugins || []).filter(extractor => extractor.source === 'process' && extractor.status === 'started').length;
+        const failedProcessCount = (snapshot.all_plugins || []).filter(extractor => extractor.source === 'process' && extractor.status === 'failed').length;
+        const snapshotMeta = (snapshot.total_plugins || 0) > 0
+            ? processOnly
+                ? runningProcessCount > 0
+                    ? `Running ${runningProcessCount}/${snapshot.total_plugins || 0} setup hooks`
+                    : failedProcessCount > 0
+                        ? `${failedProcessCount} setup hook${failedProcessCount === 1 ? '' : 's'} failed`
+                        : `${snapshot.completed_plugins || 0}/${snapshot.total_plugins || 0} setup hooks`
+                : hasProcessEntries
+                    ? `${snapshot.completed_plugins || 0}/${snapshot.total_plugins || 0} tasks${(snapshot.failed_plugins || 0) > 0 ? ` <span style="color:#f85149">(${snapshot.failed_plugins} failed)</span>` : ''}${runningProcessCount > 0 ? ` <span style="color:#d29922">(${runningProcessCount} hooks running)</span>` : ''}`
+                    : `${snapshot.completed_plugins || 0}/${snapshot.total_plugins || 0} extractors${(snapshot.failed_plugins || 0) > 0 ? ` <span style="color:#f85149">(${snapshot.failed_plugins} failed)</span>` : ''}`
+            : 'Waiting for extractors...';
+
+        return `
+            <div class="snapshot-item">
+                <div class="snapshot-header">
+                    <a class="snapshot-header-link" href="${adminUrl}">
+                        <span class="snapshot-icon">${statusIcon}</span>
+                        <div class="snapshot-info">
+                            <div class="snapshot-url">Snapshot: ${formatUrl(snapshot.url)}</div>
+                            <div class="snapshot-meta">
+                                ${snapshotMeta}
+                            </div>
+                        </div>
+                        ${snapshotPidHtml}
+                        <span class="status-badge ${snapshot.status || 'unknown'}">${snapshot.status || 'unknown'}</span>
+                    </a>
+                    ${cancelBtn}
+                </div>
+                <div class="snapshot-progress">
+                    <div class="progress-bar-container">
+                        <div class="progress-bar snapshot ${((processOnly && runningProcessCount > 0) || (snapshot.status === 'started' && (snapshot.progress || 0) === 0)) ? 'indeterminate' : ''}"
+                             style="width: ${snapshot.progress || 0}%"></div>
+                    </div>
+                </div>
+                ${extractorHtml}
+            </div>
+        `;
+    }
+
+    function renderCrawl(crawl) {
+        const statusIcon = crawl.status === 'started' ? '&#8635;' : '&#128269;';
+        const adminUrl = `/admin/crawls/crawl/${crawl.id || 'unknown'}/change/`;
+        const canCancel = crawl.status === 'queued' || crawl.status === 'started';
+        const cancelBtn = canCancel
+            ? `<button class="cancel-item-btn" data-cancel-type="crawl" data-crawl-id="${crawl.id}" data-label="✕" title="Cancel crawl">✕</button>`
+            : '';
+        const crawlPidHtml = crawl.worker_pid ? `<span class="pid-label compact">pid ${crawl.worker_pid}</span>` : '';
+
+        let snapshotsHtml = '';
+        if (crawl.active_snapshots && crawl.active_snapshots.length > 0) {
+            snapshotsHtml = crawl.active_snapshots.map(s => renderSnapshot(s, crawl.id)).join('');
+        }
+        let setupHtml = '';
+        if (crawl.setup_plugins && crawl.setup_plugins.length > 0) {
+            const setupSummary = `${crawl.setup_completed_plugins || 0}/${crawl.setup_total_plugins || 0} setup tasks${(crawl.setup_failed_plugins || 0) > 0 ? ` <span style="color:#f85149">(${crawl.setup_failed_plugins} failed)</span>` : ''}`;
+            const sortedSetup = [...crawl.setup_plugins].sort((a, b) =>
+                (a.plugin || '').localeCompare(b.plugin || '')
+            );
+            setupHtml = `
+                <div class="snapshot-item">
+                    <div class="snapshot-header">
+                        <div class="snapshot-header-link">
+                            <span class="snapshot-icon">&#9881;</span>
+                            <div class="snapshot-info">
+                                <div class="snapshot-url">Crawl Setup</div>
+                                <div class="snapshot-meta">${setupSummary}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="extractor-list">
+                        ${sortedSetup.map(e => renderExtractor(e)).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show warning if crawl is stuck (queued but can't start)
+        let warningHtml = '';
+        if (crawl.status === 'queued' && !crawl.can_start) {
+            warningHtml = `
+                <div style="padding: 8px 14px; background: rgba(248, 81, 73, 0.1); border-top: 1px solid #f85149; color: #f85149; font-size: 11px;">
+                    ⚠️ Crawl cannot start: ${crawl.urls_preview ? 'unknown error' : 'no URLs'}
+                </div>
+            `;
+        } else if (crawl.status === 'queued' && crawl.retry_at_future) {
+            // Queued but retry_at is in future (was claimed by worker, will retry)
+            warningHtml = `
+                <div style="padding: 8px 14px; background: rgba(88, 166, 255, 0.1); border-top: 1px solid #58a6ff; color: #58a6ff; font-size: 11px;">
+                    🔄 Trying in ${crawl.seconds_until_retry || 0}s...${crawl.urls_preview ? ` (${crawl.urls_preview})` : ''}
+                </div>
+            `;
+        } else if (crawl.status === 'queued' && crawl.total_snapshots === 0) {
+            // Queued and waiting to be picked up by worker
+            warningHtml = `
+                <div style="padding: 8px 14px; background: rgba(210, 153, 34, 0.1); border-top: 1px solid #d29922; color: #d29922; font-size: 11px;">
+                    ⏳ Waiting for the runner to pick up...${crawl.urls_preview ? ` (${crawl.urls_preview})` : ''}
+                </div>
+            `;
+        }
+
+        // Show snapshot info or URL count if no snapshots yet
+        let metaText = `depth: ${crawl.max_depth || 0}`;
+        if ((crawl.total_snapshots || 0) > 0) {
+            metaText += ` | ${crawl.total_snapshots} snapshots`;
+        } else if ((crawl.urls_count || 0) > 0) {
+            metaText += ` | ${crawl.urls_count} URLs`;
+        } else if (crawl.urls_preview) {
+            metaText += ` | ${crawl.urls_preview.substring(0, 40)}${crawl.urls_preview.length > 40 ? '...' : ''}`;
+        }
+
+        return `
+            <div class="crawl-item" data-crawl-id="${crawl.id || 'unknown'}">
+                <div class="crawl-header">
+                    <a class="crawl-header-link" href="${adminUrl}">
+                        <span class="crawl-icon">${statusIcon}</span>
+                        <div class="crawl-info">
+                            <div class="crawl-label">Crawl: ${crawl.label || '(no label)'}</div>
+                            <div class="crawl-meta">${metaText}</div>
+                        </div>
+                        <div class="crawl-stats">
+                            <span style="color:#3fb950">${crawl.completed_snapshots || 0} done</span>
+                            <span style="color:#d29922">${crawl.started_snapshots || 0} active</span>
+                            <span style="color:#8b949e">${crawl.pending_snapshots || 0} pending</span>
+                        </div>
+                        ${crawlPidHtml}
+                        <span class="status-badge ${crawl.status || 'unknown'}">${crawl.status || 'unknown'}</span>
+                    </a>
+                    ${cancelBtn}
+                </div>
+                <div class="crawl-progress">
+                    <div class="progress-bar-container">
+                        <div class="progress-bar crawl ${crawl.status === 'started' && (crawl.progress || 0) === 0 ? 'indeterminate' : ''}"
+                             style="width: ${crawl.progress || 0}%"></div>
+                    </div>
+                </div>
+                ${warningHtml}
+                <div class="crawl-body">
+                    <div class="snapshot-list">
+                        ${setupHtml}
+                        ${snapshotsHtml}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+
+    function updateProgress(data) {
+        // Calculate if there's activity
+        const hasActivity = data.active_crawls.length > 0 ||
+                           data.crawls_pending > 0 || data.crawls_started > 0 ||
+                           data.snapshots_pending > 0 || data.snapshots_started > 0 ||
+                           data.archiveresults_pending > 0 || data.archiveresults_started > 0;
+        if (!hasActivity && !isCollapsed) {
+            setCollapsedState(true);
+        }
+        if (hasActivity) {
+            idleTicks = 0;
+            if (pollDelayMs !== 1000) {
+                setPollingDelay(1000);
+            }
+        } else {
+            idleTicks += 1;
+            if (idleTicks > 5 && pollDelayMs !== 10000) {
+                setPollingDelay(10000);
+            }
+        }
+
+        // Update orchestrator status - show "Running" only when there's actual activity
+        // Don't distinguish between "Stopped" and "Idle" since orchestrator starts/stops frequently
+        const dot = document.getElementById('orchestrator-dot');
+        const text = document.getElementById('orchestrator-text');
+        const pidEl = document.getElementById('orchestrator-pid');
+        const hasWorkers = data.total_workers > 0;
+
+        if (hasWorkers || hasActivity) {
+            dot.classList.remove('stopped', 'idle');
+            dot.classList.add('running');
+            text.textContent = 'Running';
+        } else {
+            // No activity - show as idle (whether orchestrator process exists or not)
+            dot.classList.remove('stopped', 'running');
+            dot.classList.add('idle');
+            text.textContent = 'Idle';
+        }
+
+        if (data.orchestrator_pid) {
+            pidEl.textContent = `pid ${data.orchestrator_pid}`;
+            pidEl.style.display = 'inline-flex';
+        } else {
+            pidEl.textContent = '';
+            pidEl.style.display = 'none';
+        }
+
+        // Pulse the dot to show we got fresh data
+        dot.classList.add('flash');
+        setTimeout(() => dot.classList.remove('flash'), 300);
+
+        // Update stats
+        document.getElementById('worker-count').textContent = data.total_workers;
+        document.getElementById('total-queued').textContent =
+            data.crawls_pending + data.snapshots_pending + data.archiveresults_pending;
+
+        // Store raw values and display relative to baseline
+        lastSucceeded = data.archiveresults_succeeded;
+        lastFailed = data.archiveresults_failed;
+
+        // If baseline is higher than current (e.g. after DB reset), reset baseline
+        if (succeededBaseline > lastSucceeded) {
+            succeededBaseline = 0;
+            localStorage.setItem('progress-succeeded-baseline', '0');
+        }
+        if (failedBaseline > lastFailed) {
+            failedBaseline = 0;
+            localStorage.setItem('progress-failed-baseline', '0');
+        }
+
+        document.getElementById('total-succeeded').textContent = lastSucceeded - succeededBaseline;
+        document.getElementById('total-failed').textContent = lastFailed - failedBaseline;
+
+        // Render crawl tree
+        if (data.active_crawls.length > 0) {
+            idleMessage.style.display = 'none';
+            crawlTree.innerHTML = data.active_crawls.map(c => renderCrawl(c)).join('');
+        } else if (hasActivity) {
+            idleMessage.style.display = 'none';
+            crawlTree.innerHTML = `
+                <div class="idle-message">
+                    ${data.snapshots_started || 0} snapshots processing, ${data.archiveresults_started || 0} extractors running
+                </div>
+            `;
+        } else {
+            idleMessage.style.display = '';
+            // Build the URL for recent crawls (last 24 hours)
+            var yesterday = new Date(Date.now() - 24*60*60*1000).toISOString().split('T')[0];
+            var recentUrl = '/admin/crawls/crawl/?created_at__gte=' + yesterday + '&o=-1';
+            idleMessage.innerHTML = `No active crawls (${data.crawls_pending || 0} pending, ${data.crawls_started || 0} started, <a href="${recentUrl}" style="color: #58a6ff;">${data.crawls_recent || 0} recent</a>)`;
+            crawlTree.innerHTML = '';
+        }
+
+        // Recent thumbnails removed
+    }
+
+    function fetchProgress() {
+        fetch('/admin/live-progress/')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    console.error('Progress API error:', data.error, data.traceback);
+                    idleMessage.textContent = 'API Error: ' + data.error;
+                    idleMessage.style.color = '#f85149';
+                }
+                updateProgress(data);
+            })
+            .catch(error => {
+                console.error('Progress fetch error:', error);
+                idleMessage.textContent = 'Fetch Error: ' + error.message;
+                idleMessage.style.color = '#f85149';
+            });
+    }
+
+    function startPolling() {
+        if (pollInterval) return;
+        fetchProgress();
+        pollInterval = setInterval(fetchProgress, pollDelayMs);
+    }
+
+    function stopPolling() {
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+    }
+
+    function setPollingDelay(ms) {
+        pollDelayMs = ms;
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = setInterval(fetchProgress, pollDelayMs);
+        }
+    }
+
+    function setCollapsedState(collapsed, persist = true) {
+        isCollapsed = collapsed;
+        if (persist) {
+            localStorage.setItem('progress-monitor-collapsed', isCollapsed);
+        }
+        if (isCollapsed) {
+            monitor.classList.add('collapsed');
+            collapseBtn.textContent = 'Expand';
+        } else {
+            monitor.classList.remove('collapsed');
+            collapseBtn.textContent = 'Details';
+        }
+    }
+
+    function setCancelButtonState(btn, busy) {
+        if (!btn) return;
+        const label = btn.dataset.label || '✕';
+        btn.disabled = !!busy;
+        btn.classList.toggle('is-busy', !!busy);
+        btn.textContent = busy ? '…' : label;
+    }
+
+    function cancelCrawl(crawlId, btn) {
+        if (!crawlId) return;
+        if (!getApiKey()) {
+            console.warn('API key unavailable for this session.');
+            setCancelButtonState(btn, false);
+            return;
+        }
+        setCancelButtonState(btn, true);
+
+        fetch(buildApiUrl(`/api/v1/crawls/crawl/${crawlId}`), {
+            method: 'PATCH',
+            headers: buildApiHeaders(),
+            body: JSON.stringify({ status: 'sealed', retry_at: null }),
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                console.error('Cancel crawl error:', data.error);
+            }
+            fetchProgress();
+        })
+        .catch(error => {
+            console.error('Cancel crawl failed:', error);
+            setCancelButtonState(btn, false);
+        });
+    }
+
+    function cancelSnapshot(snapshotId, btn) {
+        if (!snapshotId) return;
+        if (!getApiKey()) {
+            console.warn('API key unavailable for this session.');
+            setCancelButtonState(btn, false);
+            return;
+        }
+        setCancelButtonState(btn, true);
+
+        fetch(buildApiUrl(`/api/v1/core/snapshot/${snapshotId}`), {
+            method: 'PATCH',
+            headers: buildApiHeaders(),
+            body: JSON.stringify({ status: 'sealed', retry_at: null }),
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                console.error('Cancel snapshot error:', data.error);
+            }
+            fetchProgress();
+        })
+        .catch(error => {
+            console.error('Cancel snapshot failed:', error);
+            setCancelButtonState(btn, false);
+        });
+    }
+
+    // Collapse toggle
+    collapseBtn.addEventListener('click', function() {
+        setCollapsedState(!isCollapsed);
+    });
+
+    crawlTree.addEventListener('click', function(event) {
+        const btn = event.target.closest('.cancel-item-btn');
+        if (!btn) return;
+        event.preventDefault();
+        event.stopPropagation();
+
+        const cancelType = btn.dataset.cancelType;
+        if (cancelType === 'crawl') {
+            cancelCrawl(btn.dataset.crawlId, btn);
+        } else if (cancelType === 'snapshot') {
+            cancelSnapshot(btn.dataset.snapshotId, btn);
+        }
+    });
+
+    // Apply initial state
+    if (isCollapsed) {
+        setCollapsedState(true, false);
+    }
+
+    // Start polling when page loads
+    startPolling();
+
+    // Pause polling when tab is hidden
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            stopPolling();
+        } else {
+            startPolling();
+        }
+    });
+})();
+</script>

@@ -2,6 +2,7 @@ name: Build Docker image
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     branches:
       - '**'
@@ -12,62 +13,87 @@ on:
 env:
   DOCKER_IMAGE: archivebox-ci
 
-
 jobs:
   buildx:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: true
-          fetch-depth: 1
+        # with:
+        #   submodules: true
+        #   fetch-depth: 1
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-      
+
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v3
         with:
           version: latest
           install: true
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-      
+          platforms: linux/amd64,linux/arm64
+
       - name: Builder instance name
         run: echo ${{ steps.buildx.outputs.name }}
-      
+
       - name: Available platforms
         run: echo ${{ steps.buildx.outputs.platforms }}
-      
+
       - name: Cache Docker layers
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: /tmp/.buildx-cache
           key: ${{ runner.os }}-buildx-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      - name: Docker Login
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         if: github.event_name != 'pull_request'
         with:
-           username: ${{ secrets.DOCKER_USERNAME }}
-           password: ${{ secrets.DOCKER_PASSWORD }}
-      
-      - name: Collect Docker tags
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect Full Release Docker tags
+        # https://github.com/docker/metadata-action
         id: docker_meta
         uses: docker/metadata-action@v5
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
         with:
-          images: archivebox/archivebox,nikisweeting/archivebox
-          flavor: |
-              latest=auto
+          images: archivebox/archivebox,ghcr.io/archivebox/archivebox
           tags: |
+              # :stable
               type=ref,event=branch
+              # :0.7.3
               type=semver,pattern={{version}}
+              # :0.7
               type=semver,pattern={{major}}.{{minor}}
+              # :sha-463ea54
               type=sha
-      
+              # :latest
+              type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'stable') }}
+
+      - name: Collect Non-Release Docker tags
+        # https://github.com/docker/metadata-action
+        id: docker_meta_non_release
+        uses: docker/metadata-action@v5
+        if: github.event_name != 'workflow_dispatch' && github.event_name != 'workflow_call'
+        with:
+          images: archivebox/archivebox,ghcr.io/archivebox/archivebox
+          tags: |
+              # :stable
+              type=ref,event=branch
+              # :sha-463ea54
+              type=sha
+
       - name: Build and push
         id: docker_build
         uses: docker/build-push-action@v5
@@ -76,10 +102,28 @@ jobs:
           file: ./Dockerfile
           builder: ${{ steps.buildx.outputs.name }}
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.docker_meta.outputs.tags }}
+          tags: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') && steps.docker_meta.outputs.tags || steps.docker_meta_non_release.outputs.tags }}
+          labels: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') && steps.docker_meta.outputs.labels || steps.docker_meta_non_release.outputs.labels }}
           cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+          platforms: linux/amd64,linux/arm64
 
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
+
+      - name: Update README
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+          repository: archivebox/archivebox
+
+      # This ugly bit is necessary if you don't want your cache to grow forever
+      # until it hits GitHub's limit of 5GB.
+      # Temp fix
+      # https://github.com/docker/build-push-action/issues/252
+      # https://github.com/moby/buildkit/issues/1896
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache

@@ -6,13 +6,26 @@ __pycache__/
 .eggs/
 tests/out/
 
+# Coverage
+.coverage
+.coverage.*
+coverage.json
+coverage/
+htmlcov/
+
 # Python and Node dependencies
 venv/
 .venv/
 .docker-venv/
 node_modules/
+typings/
+
+# Ignore dev lockfiles (should always be built fresh)
+pdm.dev.lock
+requirements-dev.txt
 
 # Packaging artifacts
+requirements.txt
 .pdm-python
 .pdm-build
 archivebox.egg-info
@@ -21,11 +34,26 @@ build/
 dist/
 
 # Data folders
+lib/
+out/
+tmp/
 data/
-data1/
-data2/
-data3/
+data*/
+archivebox/tests/data/
+archive/
 output/
+logs/
+index.sqlite3
+queue.sqlite3
+*.sqlite*
+data.*
+.archivebox_id
+ArchiveBox.conf
+*.stdout
+*.stderr
+*.log
+.tmp/
 
 # vim
 *.sw?
+.vscode

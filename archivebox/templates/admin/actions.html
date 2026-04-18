@@ -1,0 +1,65 @@
+{% load i18n %}
+<div class="actions">
+  <div class="actions-left">
+    {% block actions %}
+      {% block actions-form %}
+      {% for field in action_form %}
+        {% if field.name == "tags" %}
+          <span class="actions-tags">{{ field }}</span>
+        {% else %}
+          {% if field.label %}<label>{{ field.label }} {{ field }}</label>{% else %}{{ field }}{% endif %}
+        {% endif %}
+      {% endfor %}
+      {% endblock %}
+      {% block actions-submit %}
+      <button type="submit" class="button" name="index" value="{{ action_index|default:0 }}">{% translate "Run" %}</button>
+      {% endblock %}
+      {% block actions-counter %}
+      {% if actions_selection_counter %}
+          <span class="action-counter" data-actions-icnt="{{ cl.result_list|length }}">{{ selection_note }}</span>
+          {% if cl.result_count != cl.result_list|length %}
+          <span class="all hidden">{{ selection_note_all }}</span>
+          <span class="question hidden">
+              <a role="button" href="#" title="{% translate "Click here to select the objects across all pages" %}">{% blocktranslate with cl.result_count as total_count %}Select all {{ total_count }} {{ module_name }}{% endblocktranslate %}</a>
+          </span>
+          <span class="clear hidden"><a role="button" href="#">{% translate "Clear selection" %}</a></span>
+          {% endif %}
+      {% endif %}
+      {% endblock %}
+    {% endblock %}
+  </div>
+  {% if action_index|default:0 == 0 %}
+    {% if cl.has_filters or opts.model_name == 'snapshot' %}
+      <div class="actions-right">
+        {% if cl.has_filters %}
+          <button
+            type="button"
+            class="button"
+            id="changelist-toolbar-filter-toggle"
+          >
+            {% translate "Filters" %}
+          </button>
+        {% endif %}
+        {% if request.resolver_match.url_name == 'grid' %}
+          <button
+            type="button"
+            class="button"
+            id="snapshot-view-toggle"
+            onclick="window.location.href='{% url 'admin:core_snapshot_changelist' %}{% if request.GET.urlencode %}?{{ request.GET.urlencode }}{% endif %}'"
+          >
+            {% translate "List" %}
+          </button>
+        {% elif opts.model_name == 'snapshot' %}
+          <button
+            type="button"
+            class="button"
+            id="snapshot-view-toggle"
+            onclick="window.location.href='{% url 'admin:grid' %}{% if request.GET.urlencode %}?{{ request.GET.urlencode }}{% endif %}'"
+          >
+            {% translate "Grid" %}
+          </button>
+        {% endif %}
+      </div>
+    {% endif %}
+  {% endif %}
+</div>

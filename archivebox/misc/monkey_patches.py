@@ -1,0 +1,72 @@
+__package__ = "archivebox"
+
+
+import datetime
+import warnings
+
+import benedict
+from daphne import access
+import django_stubs_ext
+from django.utils import timezone
+
+django_stubs_ext.monkeypatch()
+
+
+# monkey patch django timezone to add back utc (it was removed in Django 5.0)
+setattr(timezone, "utc", datetime.UTC)
+
+# monkey patch django-signals-webhooks to change how it shows up in Admin UI
+# from signal_webhooks.apps import DjangoSignalWebhooksConfig
+# DjangoSignalWebhooksConfig.verbose_name = 'API'
+
+
+# Rich traceback handler disabled - it adds frames/boxes that wrap weirdly in log files
+# Standard Python tracebacks are used instead (full width, no frames)
+# from rich.traceback import install
+# install(show_locals=True, word_wrap=False, ...)
+
+
+# Hide site-packages/sonic/client.py:115: SyntaxWarning
+# https://github.com/xmonader/python-sonic-client/pull/18
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="sonic")
+
+
+# Make daphne log requests quieter and easier to read
+class ModifiedAccessLogGenerator(access.AccessLogGenerator):
+    """Clutge workaround until daphne uses the Python logging framework. https://github.com/django/daphne/pull/473/files"""
+
+    def write_entry(self, host, date, request, status=None, length=None, ident=None, user=None):
+
+        # Ignore noisy requests to staticfiles / favicons / etc.
+        if "GET /static/" in request:
+            return
+        if "GET /health/" in request:
+            return
+        if "GET /admin/jsi18n/" in request:
+            return
+        if request.endswith("/favicon.ico") or request.endswith("/robots.txt") or request.endswith("/screenshot.png"):
+            return
+        if request.endswith(".css") or request.endswith(".js") or request.endswith(".woff") or request.endswith(".ttf"):
+            return
+        if str(status) in ("404", "304"):
+            return
+
+        # clean up the log format to mostly match the same format as django.conf.settings.LOGGING rich formats
+        self.stream.write(
+            "%s HTTP     %s %s %s\n"
+            % (
+                date.strftime("%Y-%m-%d %H:%M:%S"),
+                request,
+                status or "-",
+                "localhost" if host.startswith("127.") else host.split(":")[0],
+            ),
+        )
+
+
+access.AccessLogGenerator.write_entry = ModifiedAccessLogGenerator.write_entry  # type: ignore
+
+
+# fix benedict objects to pretty-print/repr more nicely with rich
+# https://stackoverflow.com/a/79048811/2156113
+# https://rich.readthedocs.io/en/stable/pretty.html#rich-repr-protocol
+benedict.benedict.__rich_repr__ = lambda self: (dict(self),)  # type: ignore

@@ -10,35 +10,34 @@ set -o nounset
 set -o pipefail
 IFS=$'\n'
 
-
-CURRENT_PLAFORM="$(uname)"
-REQUIRED_PLATFORM="Linux"
-if [[ "$CURRENT_PLAFORM" != "$REQUIRED_PLATFORM" ]]; then
-   echo "[!] Skipping the Debian package build on $CURRENT_PLAFORM (it can only be run on $REQUIRED_PLATFORM)."
-   exit 0
-fi
-
-
 REPO_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && cd .. && pwd )"
-VERSION="$(jq -r '.version' < "$REPO_DIR/package.json")"
-DEBIAN_VERSION="${DEBIAN_VERSION:-1}"
 cd "$REPO_DIR"
 
+VERSION="$(grep '^version = ' "${REPO_DIR}/pyproject.toml" | awk -F'"' '{print $2}')"
+export VERSION
 
-if [[ -f "$REPO_DIR/.venv/bin/activate" ]]; then
-    source "$REPO_DIR/.venv/bin/activate"
-else
-    echo "[!] Warning: No virtualenv presesnt in $REPO_DIR.venv"
+# Default to amd64, can be overridden with ARCH=arm64
+export ARCH="${ARCH:-amd64}"
+
+echo "[+] Building .deb package for archivebox_${VERSION}_${ARCH}..."
+
+# Check for nfpm
+if ! command -v nfpm &>/dev/null; then
+    echo "[!] nfpm not found. Install it with one of:"
+    echo "    go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest"
+    echo "    uv tool install nfpm"
+    echo "    brew install goreleaser/tap/nfpm"
+    echo "    curl -sfL https://install.goreleaser.com/github.com/goreleaser/nfpm.sh | sh"
+    exit 1
 fi
 
-# cleanup build artifacts
-rm -Rf build deb_dist dist archivebox-*.tar.gz
+mkdir -p "$REPO_DIR/dist"
 
+nfpm package \
+    --config "$REPO_DIR/pkg/debian/nfpm.yaml" \
+    --packager deb \
+    --target "$REPO_DIR/dist/"
 
-# build source and binary packages
-# make sure the stdeb.cfg file is up-to-date with all the dependencies
-python3 setup.py --command-packages=stdeb.command \
-    sdist_dsc --debian-version=$DEBIAN_VERSION \
-    bdist_deb
-
-# should output deb_dist/archivebox_0.5.4-1.{deb,changes,buildinfo,tar.gz}
+echo
+echo "[√] Built .deb package:"
+ls -la "$REPO_DIR/dist/"archivebox*.deb

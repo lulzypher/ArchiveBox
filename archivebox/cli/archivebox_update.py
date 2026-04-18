@@ -1,136 +1,600 @@
 #!/usr/bin/env python3
 
-__package__ = 'archivebox.cli'
-__command__ = 'archivebox update'
+__package__ = "archivebox.cli"
 
-import sys
-import argparse
+import os
+import time
 
-from typing import List, Optional, IO
+from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Iterable
+from pathlib import Path
 
-from ..main import update
-from ..util import docstring
-from ..config import OUTPUT_DIR
-from ..index import (
-    LINK_FILTERS,
-    get_indexed_folders,
-    get_archived_folders,
-    get_unarchived_folders,
-    get_present_folders,
-    get_valid_folders,
-    get_invalid_folders,
-    get_duplicate_folders,
-    get_orphaned_folders,
-    get_corrupted_folders,
-    get_unrecognized_folders,
-)
-from ..logging_util import SmartFormatter, accept_stdin
+import rich_click as click
+from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import Q, QuerySet
+
+from archivebox.misc.util import enforce_types, docstring
+
+if TYPE_CHECKING:
+    from archivebox.core.models import Snapshot
+    from archivebox.crawls.models import Crawl
 
 
-@docstring(update.__doc__)
-def main(args: Optional[List[str]]=None, stdin: Optional[IO]=None, pwd: Optional[str]=None) -> None:
-    parser = argparse.ArgumentParser(
-        prog=__command__,
-        description=update.__doc__,
-        add_help=True,
-        formatter_class=SmartFormatter,
+LINK_FILTERS: dict[str, Callable[[str], Q]] = {
+    "exact": lambda pattern: Q(url=pattern),
+    "substring": lambda pattern: Q(url__icontains=pattern),
+    "regex": lambda pattern: Q(url__iregex=pattern),
+    "domain": lambda pattern: (
+        Q(url__istartswith=f"http://{pattern}") | Q(url__istartswith=f"https://{pattern}") | Q(url__istartswith=f"ftp://{pattern}")
+    ),
+    "tag": lambda pattern: Q(tags__name=pattern),
+    "timestamp": lambda pattern: Q(timestamp=pattern),
+}
+
+
+def _apply_pattern_filters(
+    snapshots: QuerySet["Snapshot", "Snapshot"],
+    filter_patterns: list[str],
+    filter_type: str,
+) -> QuerySet["Snapshot", "Snapshot"]:
+    filter_builder = LINK_FILTERS.get(filter_type)
+    if filter_builder is None:
+        raise SystemExit(2)
+
+    query = Q()
+    for pattern in filter_patterns:
+        query |= filter_builder(pattern)
+    return snapshots.filter(query)
+
+
+def _get_snapshot_crawl(snapshot: "Snapshot") -> "Crawl | None":
+    try:
+        return snapshot.crawl
+    except ObjectDoesNotExist:
+        return None
+
+
+def _get_search_indexing_plugins() -> list[str]:
+    from abx_dl.models import discover_plugins
+    from archivebox.hooks import get_search_backends
+
+    available_backends = set(get_search_backends())
+    plugins = discover_plugins()
+    return sorted(
+        plugin_name
+        for plugin_name, plugin in plugins.items()
+        if plugin_name.startswith("search_backend_")
+        and plugin_name.removeprefix("search_backend_") in available_backends
+        and any("Snapshot" in hook.name and "index" in hook.name.lower() for hook in plugin.hooks)
     )
-    parser.add_argument(
-        '--only-new', #'-n',
-        action='store_true',
-        help="Don't attempt to retry previously skipped/failed links when updating",
+
+
+def _build_filtered_snapshots_queryset(
+    *,
+    filter_patterns: Iterable[str],
+    filter_type: str,
+    before: float | None,
+    after: float | None,
+    resume: str | None = None,
+):
+    from archivebox.core.models import Snapshot
+    from datetime import datetime
+
+    snapshots = Snapshot.objects.all()
+
+    if filter_patterns:
+        snapshots = _apply_pattern_filters(snapshots, list(filter_patterns), filter_type)
+
+    if before:
+        snapshots = snapshots.filter(bookmarked_at__lt=datetime.fromtimestamp(before))
+    if after:
+        snapshots = snapshots.filter(bookmarked_at__gt=datetime.fromtimestamp(after))
+    if resume:
+        snapshots = snapshots.filter(timestamp__lte=resume)
+
+    return snapshots.select_related("crawl").order_by("-bookmarked_at")
+
+
+def reindex_snapshots(
+    snapshots: QuerySet["Snapshot", "Snapshot"],
+    *,
+    search_plugins: list[str],
+    batch_size: int,
+) -> dict[str, int]:
+    from archivebox.cli.archivebox_extract import run_plugins
+
+    stats = {"processed": 0, "reconciled": 0, "queued": 0, "reindexed": 0}
+    records: list[dict[str, str]] = []
+
+    total = snapshots.count()
+    print(f"[*] Reindexing {total} snapshots with search plugins: {', '.join(search_plugins)}")
+
+    for snapshot in snapshots.iterator(chunk_size=batch_size):
+        stats["processed"] += 1
+
+        if _get_snapshot_crawl(snapshot) is None:
+            continue
+
+        output_dir = Path(snapshot.output_dir)
+        has_directory = output_dir.exists() and output_dir.is_dir()
+        if has_directory:
+            snapshot.reconcile_with_index_json()
+            stats["reconciled"] += 1
+
+        for plugin_name in search_plugins:
+            existing_result = snapshot.archiveresult_set.filter(plugin=plugin_name).order_by("-created_at").first()
+            if existing_result:
+                existing_result.reset_for_retry()
+            records.append(
+                {
+                    "type": "ArchiveResult",
+                    "snapshot_id": str(snapshot.id),
+                    "plugin": plugin_name,
+                },
+            )
+            stats["queued"] += 1
+
+    if not records:
+        return stats
+
+    exit_code = run_plugins(
+        args=(),
+        records=records,
+        wait=True,
+        emit_results=False,
     )
-    parser.add_argument(
-        '--index-only', #'-o',
-        action='store_true',
-        help="Update the main index without archiving any content",
-    )
-    parser.add_argument(
-        '--resume', #'-r',
-        type=float,
-        help='Resume the update process from a given timestamp',
-        default=None,
-    )
-    parser.add_argument(
-        '--overwrite', #'-x',
-        action='store_true',
-        help='Ignore existing archived content and overwrite with new versions (DANGEROUS)',
-    )
-    parser.add_argument(
-        '--before', #'-b',
-        type=float,
-        help="Update only links bookmarked before the given timestamp.",
-        default=None,
-    )
-    parser.add_argument(
-        '--after', #'-a',
-        type=float,
-        help="Update only links bookmarked after the given timestamp.",
-        default=None,
-    )
-    parser.add_argument(
-        '--status',
-        type=str,
-        choices=('indexed', 'archived', 'unarchived', 'present', 'valid', 'invalid', 'duplicate', 'orphaned', 'corrupted', 'unrecognized'),
-        default='indexed',
-        help=(
-            'Update only links or data directories that have the given status\n'
-            f'    indexed       {get_indexed_folders.__doc__} (the default)\n'
-            f'    archived      {get_archived_folders.__doc__}\n'
-            f'    unarchived    {get_unarchived_folders.__doc__}\n'
-            '\n'
-            f'    present       {get_present_folders.__doc__}\n'
-            f'    valid         {get_valid_folders.__doc__}\n'
-            f'    invalid       {get_invalid_folders.__doc__}\n'
-            '\n'
-            f'    duplicate     {get_duplicate_folders.__doc__}\n'
-            f'    orphaned      {get_orphaned_folders.__doc__}\n'
-            f'    corrupted     {get_corrupted_folders.__doc__}\n'
-            f'    unrecognized  {get_unrecognized_folders.__doc__}\n'
+    if exit_code != 0:
+        raise SystemExit(exit_code)
+
+    stats["reindexed"] = len(records)
+    return stats
+
+
+@enforce_types
+def update(
+    filter_patterns: Iterable[str] = (),
+    filter_type: str = "exact",
+    before: float | None = None,
+    after: float | None = None,
+    resume: str | None = None,
+    batch_size: int = 100,
+    continuous: bool = False,
+    index_only: bool = False,
+) -> None:
+    """
+    Update snapshots: migrate old dirs, reconcile DB, and re-queue for archiving.
+
+    Three-phase operation (without filters):
+    - Phase 1: Drain old archive/ dirs by moving to new fs location (0.8.x → 0.9.x)
+    - Phase 2: O(n) scan over entire DB from most recent to least recent
+    - No orphan scans needed (trust 1:1 mapping between DB and filesystem after phase 1)
+
+    With filters: Only phase 2 (DB query), no filesystem operations.
+    Without filters: All phases (full update).
+    """
+
+    from rich import print
+    from archivebox.config.django import setup_django
+
+    setup_django()
+
+    from django.core.management import call_command
+
+    # Run migrations first to ensure DB schema is up-to-date
+    print("[*] Checking for pending migrations...")
+    try:
+        call_command("migrate", "--no-input", verbosity=0)
+    except Exception as e:
+        print(f"[!] Warning: Migration check failed: {e}")
+
+    while True:
+        if index_only:
+            search_plugins = _get_search_indexing_plugins()
+            if not search_plugins:
+                print("[*] No search indexing plugins are available, nothing to backfill.")
+                break
+
+            if not (filter_patterns or before or after):
+                print("[*] Phase 1: Draining old archive/ directories (0.8.x → 0.9.x migration)...")
+                drain_old_archive_dirs(
+                    resume_from=resume,
+                    batch_size=batch_size,
+                )
+
+            snapshots = _build_filtered_snapshots_queryset(
+                filter_patterns=filter_patterns,
+                filter_type=filter_type,
+                before=before,
+                after=after,
+                resume=resume,
+            )
+            stats = reindex_snapshots(
+                snapshots,
+                search_plugins=search_plugins,
+                batch_size=batch_size,
+            )
+            print_index_stats(stats)
+        elif filter_patterns or before or after:
+            # Filtered mode: query DB only
+            print("[*] Processing filtered snapshots from database...")
+            stats = process_filtered_snapshots(
+                filter_patterns=filter_patterns,
+                filter_type=filter_type,
+                before=before,
+                after=after,
+                resume=resume,
+                batch_size=batch_size,
+            )
+            print_stats(stats)
+        else:
+            # Full mode: drain old dirs + process DB
+            stats_combined = {"phase1": {}, "phase2": {}}
+
+            print("[*] Phase 1: Draining old archive/ directories (0.8.x → 0.9.x migration)...")
+            stats_combined["phase1"] = drain_old_archive_dirs(
+                resume_from=resume,
+                batch_size=batch_size,
+            )
+
+            print("[*] Phase 2: Processing all database snapshots (most recent first)...")
+            stats_combined["phase2"] = process_all_db_snapshots(batch_size=batch_size, resume=resume)
+
+            # Phase 3: Deduplication (disabled for now)
+            # print('[*] Phase 3: Deduplicating...')
+            # stats_combined['deduplicated'] = Snapshot.find_and_merge_duplicates()
+
+            print_combined_stats(stats_combined)
+
+        if not continuous:
+            break
+
+        print("[yellow]Sleeping 60s before next pass...[/yellow]")
+        time.sleep(60)
+        resume = None
+
+
+def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100) -> dict[str, int]:
+    """
+    Drain old archive/ directories (0.8.x → 0.9.x migration).
+
+    Only processes real directories (skips symlinks - those are already migrated).
+    For each old dir found in archive/:
+      1. Load or create DB snapshot
+      2. Trigger fs migration on save() to move to data/users/{user}/...
+      3. Leave symlink in archive/ pointing to new location
+
+    After this drains, archive/ should only contain symlinks and we can trust
+    1:1 mapping between DB and filesystem.
+    """
+    from archivebox.core.models import Snapshot
+    from archivebox.config import CONSTANTS
+    from django.db import transaction
+
+    stats = {"processed": 0, "migrated": 0, "skipped": 0, "invalid": 0}
+
+    archive_dir = CONSTANTS.ARCHIVE_DIR
+    if not archive_dir.exists():
+        return stats
+
+    print("[DEBUG Phase1] Scanning for old directories in archive/...")
+
+    # Scan for real directories only (skip symlinks - they're already migrated)
+    all_entries = list(os.scandir(archive_dir))
+    print(f"[DEBUG Phase1] Total entries in archive/: {len(all_entries)}")
+    entries = [
+        (e.stat().st_mtime, e.path)
+        for e in all_entries
+        if e.is_dir(follow_symlinks=False)  # Skip symlinks
+    ]
+    entries.sort(reverse=True)  # Newest first
+    print(f"[DEBUG Phase1] Real directories (not symlinks): {len(entries)}")
+    print(f"[*] Found {len(entries)} old directories to drain")
+
+    for mtime, entry_path in entries:
+        entry_path = Path(entry_path)
+
+        # Resume from timestamp if specified
+        if resume_from and entry_path.name > resume_from:
+            continue
+
+        stats["processed"] += 1
+
+        # Try to load existing snapshot from DB
+        snapshot = Snapshot.load_from_directory(entry_path)
+
+        if not snapshot:
+            # Not in DB - create new snapshot record
+            snapshot = Snapshot.create_from_directory(entry_path)
+            if not snapshot:
+                # Invalid directory - move to invalid/
+                Snapshot.move_directory_to_invalid(entry_path)
+                stats["invalid"] += 1
+                print(f"    [{stats['processed']}] Invalid: {entry_path.name}")
+                continue
+
+            try:
+                snapshot.save()
+                stats["migrated"] += 1
+                print(f"    [{stats['processed']}] Imported orphaned snapshot: {entry_path.name}")
+            except Exception as e:
+                stats["skipped"] += 1
+                print(f"    [{stats['processed']}] Skipped (error: {e}): {entry_path.name}")
+            continue
+
+        # Ensure snapshot has a valid crawl (migration 0024 may have failed)
+        has_valid_crawl = _get_snapshot_crawl(snapshot) is not None
+
+        if not has_valid_crawl:
+            # Create a new crawl (created_by will default to system user)
+            from archivebox.crawls.models import Crawl
+
+            crawl = Crawl.objects.create(urls=snapshot.url)
+            # Use queryset update to avoid triggering save() hooks
+            from archivebox.core.models import Snapshot as SnapshotModel
+
+            SnapshotModel.objects.filter(pk=snapshot.pk).update(crawl=crawl)
+            # Refresh the instance
+            snapshot.crawl = crawl
+            print(f"[DEBUG Phase1] Created missing crawl for snapshot {str(snapshot.id)[:8]}")
+
+        # Check if needs migration (0.8.x → 0.9.x)
+        print(
+            f"[DEBUG Phase1] Snapshot {str(snapshot.id)[:8]}: fs_version={snapshot.fs_version}, needs_migration={snapshot.fs_migration_needed}",
         )
-    )
-    parser.add_argument(
-        '--filter-type', '-t',
-        type=str,
-        choices=(*LINK_FILTERS.keys(), 'search'),
-        default='exact',
-        help='Type of pattern matching to use when filtering URLs',
-    )
-    parser.add_argument(
-        'filter_patterns',
-        nargs='*',
-        type=str,
-        default=None,
-        help='Update only URLs matching these filter patterns.'
-    )
-    parser.add_argument(
-        "--extract",
-        type=str,
-        help="Pass a list of the extractors to be used. If the method name is not correct, it will be ignored. \
-              This does not take precedence over the configuration",
-        default=""
-    )
-    command = parser.parse_args(args or ())
+        if snapshot.fs_migration_needed:
+            try:
+                # Calculate paths using actual directory (entry_path), not snapshot.timestamp
+                # because snapshot.timestamp might be truncated
+                old_dir = entry_path
+                new_dir = snapshot.get_storage_path_for_version("0.9.0")
+                print(f"[DEBUG Phase1] Migrating {old_dir.name} → {new_dir}")
 
-    filter_patterns_str = None
-    if not command.filter_patterns:
-        filter_patterns_str = accept_stdin(stdin)
+                # Manually migrate files
+                if not new_dir.exists() and old_dir.exists():
+                    new_dir.mkdir(parents=True, exist_ok=True)
+                    import shutil
 
-    update(
-        resume=command.resume,
-        only_new=command.only_new,
-        index_only=command.index_only,
-        overwrite=command.overwrite,
-        filter_patterns_str=filter_patterns_str,
-        filter_patterns=command.filter_patterns,
-        filter_type=command.filter_type,
-        status=command.status,
-        after=command.after,
-        before=command.before,
-        out_dir=pwd or OUTPUT_DIR,
-        extractors=command.extract,
+                    file_count = 0
+                    for old_file in old_dir.rglob("*"):
+                        if old_file.is_file():
+                            rel_path = old_file.relative_to(old_dir)
+                            new_file = new_dir / rel_path
+                            if not new_file.exists():
+                                new_file.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(old_file, new_file)
+                                file_count += 1
+                    print(f"[DEBUG Phase1] Copied {file_count} files")
+
+                # Update only fs_version field using queryset update (bypasses validation)
+                from archivebox.core.models import Snapshot as SnapshotModel
+
+                SnapshotModel.objects.filter(pk=snapshot.pk).update(fs_version="0.9.0")
+
+                # Commit the transaction
+                transaction.commit()
+
+                # Cleanup: delete old dir and create symlink
+                if old_dir.exists() and old_dir != new_dir:
+                    snapshot._cleanup_old_migration_dir(old_dir, new_dir)
+
+                stats["migrated"] += 1
+                print(f"    [{stats['processed']}] Migrated: {entry_path.name}")
+            except Exception as e:
+                stats["skipped"] += 1
+                print(f"    [{stats['processed']}] Skipped (error: {e}): {entry_path.name}")
+        else:
+            stats["skipped"] += 1
+
+        if stats["processed"] % batch_size == 0:
+            transaction.commit()
+
+    transaction.commit()
+    return stats
+
+
+def process_all_db_snapshots(batch_size: int = 100, resume: str | None = None) -> dict[str, int]:
+    """
+    O(n) scan over entire DB from most recent to least recent.
+
+    For each snapshot:
+      1. Reconcile index.json with DB (merge titles, tags, archive results)
+      2. Queue for archiving (state machine will handle it)
+
+    No orphan detection needed - we trust 1:1 mapping between DB and filesystem
+    after Phase 1 has drained all old archive/ directories.
+    """
+    from archivebox.core.models import Snapshot
+    from django.db import transaction
+    from django.utils import timezone
+
+    stats = {"processed": 0, "reconciled": 0, "queued": 0}
+
+    queryset = Snapshot.objects.all()
+    if resume:
+        queryset = queryset.filter(timestamp__lte=resume)
+    total = queryset.count()
+    print(f"[*] Processing {total} snapshots from database (most recent first)...")
+
+    # Process from most recent to least recent
+    for snapshot in queryset.select_related("crawl").order_by("-bookmarked_at").iterator(chunk_size=batch_size):
+        stats["processed"] += 1
+
+        # Skip snapshots with missing crawl references (orphaned by migration errors)
+        if _get_snapshot_crawl(snapshot) is None:
+            continue
+
+        try:
+            print(
+                f"[DEBUG Phase2] Snapshot {str(snapshot.id)[:8]}: fs_version={snapshot.fs_version}, needs_migration={snapshot.fs_migration_needed}",
+            )
+
+            # Check if snapshot has a directory on disk
+            from pathlib import Path
+
+            output_dir = Path(snapshot.output_dir)
+            has_directory = output_dir.exists() and output_dir.is_dir()
+
+            # Only reconcile if directory exists (don't create empty directories for orphans)
+            if has_directory:
+                snapshot.reconcile_with_index_json()
+
+            # Clean up invalid field values from old migrations
+            if not isinstance(snapshot.current_step, int):
+                snapshot.current_step = 0
+
+            # If still needs migration, it's an orphan (no directory on disk)
+            # Mark it as migrated to prevent save() from triggering filesystem migration
+            if snapshot.fs_migration_needed:
+                if has_directory:
+                    print(f"[DEBUG Phase2] WARNING: Snapshot {str(snapshot.id)[:8]} has directory but still needs migration")
+                else:
+                    print(f"[DEBUG Phase2] Orphan snapshot {str(snapshot.id)[:8]} - marking as migrated without filesystem operation")
+                # Use queryset update to set fs_version without triggering save() hooks
+                from archivebox.core.models import Snapshot as SnapshotModel
+
+                SnapshotModel.objects.filter(pk=snapshot.pk).update(fs_version="0.9.0")
+                snapshot.fs_version = "0.9.0"
+
+            # Queue for archiving (state machine will handle it)
+            snapshot.status = Snapshot.StatusChoices.QUEUED
+            snapshot.retry_at = timezone.now()
+            snapshot.save()
+
+            stats["reconciled"] += 1 if has_directory else 0
+            stats["queued"] += 1
+        except Exception as e:
+            # Skip snapshots that can't be processed (e.g., missing crawl)
+            print(f"    [!] Skipping snapshot {snapshot.id}: {e}")
+            continue
+
+        if stats["processed"] % batch_size == 0:
+            transaction.commit()
+            print(f"    [{stats['processed']}/{total}] Processed...")
+
+    transaction.commit()
+    return stats
+
+
+def process_filtered_snapshots(
+    filter_patterns: Iterable[str],
+    filter_type: str,
+    before: float | None,
+    after: float | None,
+    resume: str | None,
+    batch_size: int,
+) -> dict[str, int]:
+    """Process snapshots matching filters (DB query only)."""
+    from django.db import transaction
+    from django.utils import timezone
+
+    stats = {"processed": 0, "reconciled": 0, "queued": 0}
+
+    snapshots = _build_filtered_snapshots_queryset(
+        filter_patterns=filter_patterns,
+        filter_type=filter_type,
+        before=before,
+        after=after,
+        resume=resume,
     )
-    
 
-if __name__ == '__main__':
-    main(args=sys.argv[1:], stdin=sys.stdin)
+    total = snapshots.count()
+    print(f"[*] Found {total} matching snapshots")
+
+    for snapshot in snapshots.select_related("crawl").iterator(chunk_size=batch_size):
+        stats["processed"] += 1
+
+        # Skip snapshots with missing crawl references
+        if _get_snapshot_crawl(snapshot) is None:
+            continue
+
+        try:
+            # Reconcile index.json with DB
+            snapshot.reconcile_with_index_json()
+
+            # Clean up invalid field values from old migrations
+            if not isinstance(snapshot.current_step, int):
+                snapshot.current_step = 0
+
+            # Queue for archiving
+            snapshot.status = Snapshot.StatusChoices.QUEUED
+            snapshot.retry_at = timezone.now()
+            snapshot.save()
+
+            stats["reconciled"] += 1
+            stats["queued"] += 1
+        except Exception as e:
+            # Skip snapshots that can't be processed
+            print(f"    [!] Skipping snapshot {snapshot.id}: {e}")
+            continue
+
+        if stats["processed"] % batch_size == 0:
+            transaction.commit()
+            print(f"    [{stats['processed']}/{total}] Processed...")
+
+    transaction.commit()
+    return stats
+
+
+def print_stats(stats: dict):
+    """Print statistics for filtered mode."""
+    from rich import print
+
+    print(f"""
+[green]Update Complete[/green]
+  Processed:   {stats["processed"]}
+  Reconciled:  {stats["reconciled"]}
+  Queued:      {stats["queued"]}
+""")
+
+
+def print_combined_stats(stats_combined: dict):
+    """Print statistics for full mode."""
+    from rich import print
+
+    s1 = stats_combined["phase1"]
+    s2 = stats_combined["phase2"]
+
+    print(f"""
+[green]Archive Update Complete[/green]
+
+Phase 1 (Drain Old Dirs):
+  Checked:     {s1.get("processed", 0)}
+  Migrated:    {s1.get("migrated", 0)}
+  Skipped:     {s1.get("skipped", 0)}
+  Invalid:     {s1.get("invalid", 0)}
+
+Phase 2 (Process DB):
+  Processed:   {s2.get("processed", 0)}
+  Reconciled:  {s2.get("reconciled", 0)}
+  Queued:      {s2.get("queued", 0)}
+""")
+
+
+def print_index_stats(stats: dict[str, Any]) -> None:
+    from rich import print
+
+    print(f"""
+[green]Search Reindex Complete[/green]
+  Processed:   {stats["processed"]}
+  Reconciled:  {stats["reconciled"]}
+  Queued:      {stats["queued"]}
+  Reindexed:   {stats["reindexed"]}
+""")
+
+
+@click.command()
+@click.option("--resume", type=str, help="Resume from timestamp")
+@click.option("--before", type=float, help="Only snapshots before timestamp")
+@click.option("--after", type=float, help="Only snapshots after timestamp")
+@click.option("--filter-type", "-t", type=click.Choice(["exact", "substring", "regex", "domain", "tag", "timestamp"]), default="exact")
+@click.option("--batch-size", type=int, default=100, help="Commit every N snapshots")
+@click.option("--continuous", is_flag=True, help="Run continuously as background worker")
+@click.option("--index-only", is_flag=True, help="Backfill available search indexes from existing archived content")
+@click.argument("filter_patterns", nargs=-1)
+@docstring(update.__doc__)
+def main(**kwargs):
+    update(**kwargs)
+
+
+if __name__ == "__main__":
+    main()

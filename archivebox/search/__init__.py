@@ -1,108 +1,197 @@
-from typing import List, Union
-from pathlib import Path
-from importlib import import_module
+"""
+Search module for ArchiveBox.
 
-from django.db.models import QuerySet
+Search indexing is handled by search backend hooks in plugins:
+    abx_plugins/plugins/search_backend_*/on_Snapshot__*_index_*.py
 
-from archivebox.index.schema import Link
-from archivebox.util import enforce_types
-from archivebox.config import stderr, OUTPUT_DIR, USE_INDEXING_BACKEND, USE_SEARCHING_BACKEND, SEARCH_BACKEND_ENGINE
+This module provides the query interface that dynamically discovers
+search backend plugins using the hooks system.
 
-from .utils import get_indexable_content, log_index_started
+Search backends must provide a search.py module with:
+    - search(query: str) -> List[str]  (returns snapshot IDs)
+    - flush(snapshot_ids: Iterable[str]) -> None
+"""
 
-def indexing_enabled():
-    return USE_INDEXING_BACKEND
+__package__ = "archivebox.search"
 
-def search_backend_enabled():
-    return USE_SEARCHING_BACKEND
+from typing import Any
 
-def get_backend():
-    return f'search.backends.{SEARCH_BACKEND_ENGINE}'
+from django.db.models import Case, IntegerField, QuerySet, Value, When
 
-def import_backend():
-    backend_string = get_backend()
-    try:
-        backend = import_module(backend_string)
-    except Exception as err:
-        raise Exception("Could not load '%s' as a backend: %s" % (backend_string, err))
-    return backend
+from archivebox.misc.util import enforce_types
+from archivebox.misc.logging import stderr
+from archivebox.config.common import SEARCH_BACKEND_CONFIG
+
+
+# Cache discovered backends to avoid repeated filesystem scans
+_search_backends_cache: dict | None = None
+SEARCH_MODES = ("meta", "contents", "deep")
+
+
+def get_default_search_mode() -> str:
+    return "meta" if SEARCH_BACKEND_CONFIG.SEARCH_BACKEND_ENGINE == "ripgrep" else "contents"
+
+
+def get_search_mode(search_mode: str | None) -> str:
+    normalized = (search_mode or "").strip().lower()
+    return normalized if normalized in SEARCH_MODES else get_default_search_mode()
+
+
+def prioritize_metadata_matches(
+    base_queryset: QuerySet,
+    metadata_queryset: QuerySet,
+    fulltext_queryset: QuerySet,
+    *,
+    deep_queryset: QuerySet | None = None,
+    ordering: list[str] | tuple[str, ...] | None = None,
+) -> QuerySet:
+    metadata_ids = list(metadata_queryset.values_list("pk", flat=True).distinct())
+    metadata_id_set = set(metadata_ids)
+    fulltext_ids = [pk for pk in fulltext_queryset.values_list("pk", flat=True).distinct() if pk not in metadata_id_set]
+    fulltext_id_set = set(fulltext_ids)
+    deep_ids = []
+    if deep_queryset is not None:
+        deep_ids = [
+            pk for pk in deep_queryset.values_list("pk", flat=True).distinct() if pk not in metadata_id_set and pk not in fulltext_id_set
+        ]
+
+    if not metadata_ids and not fulltext_ids and not deep_ids:
+        return base_queryset.none()
+
+    qs = base_queryset.filter(pk__in=[*metadata_ids, *fulltext_ids, *deep_ids]).annotate(
+        search_rank=Case(
+            When(pk__in=metadata_ids, then=Value(0)),
+            When(pk__in=fulltext_ids, then=Value(1)),
+            default=Value(2),
+            output_field=IntegerField(),
+        ),
+    )
+
+    if ordering is not None:
+        qs = qs.order_by("search_rank", *ordering)
+
+    return qs.distinct()
+
+
+def get_available_backends() -> dict:
+    """
+    Discover all available search backend plugins.
+
+    Uses the hooks system to find plugins with search.py modules.
+    Results are cached after first call.
+    """
+    global _search_backends_cache
+
+    if _search_backends_cache is None:
+        from archivebox.hooks import get_search_backends
+
+        _search_backends_cache = get_search_backends()
+
+    return _search_backends_cache
+
+
+def get_backend() -> Any:
+    """
+    Get the configured search backend module.
+
+    Discovers available backends via the hooks system and returns
+    the one matching SEARCH_BACKEND_ENGINE configuration.
+
+    Falls back to 'ripgrep' if configured backend is not found.
+    """
+    backend_name = SEARCH_BACKEND_CONFIG.SEARCH_BACKEND_ENGINE
+    backends = get_available_backends()
+
+    if backend_name in backends:
+        return backends[backend_name]
+
+    # Fallback to ripgrep if available (no index needed)
+    if "ripgrep" in backends:
+        return backends["ripgrep"]
+
+    # No backends found
+    available = list(backends.keys())
+    raise RuntimeError(
+        f'Search backend "{backend_name}" not found. Available backends: {available or "none"}',
+    )
+
 
 @enforce_types
-def write_search_index(link: Link, texts: Union[List[str], None]=None, out_dir: Path=OUTPUT_DIR, skip_text_index: bool=False) -> None:
-    if not indexing_enabled():
-        return
+def query_search_index(query: str, search_mode: str | None = None) -> QuerySet:
+    """
+    Search for snapshots matching the query.
 
-    if not skip_text_index and texts:
-        from core.models import Snapshot
+    Returns a QuerySet of Snapshot objects matching the search.
+    """
+    from archivebox.core.models import Snapshot
 
-        snap = Snapshot.objects.filter(url=link.url).first()
-        backend = import_backend()
-        if snap:
+    if not SEARCH_BACKEND_CONFIG.USE_SEARCHING_BACKEND:
+        return Snapshot.objects.none()
+
+    search_mode = "contents" if search_mode is None else get_search_mode(search_mode)
+    if search_mode == "meta":
+        return Snapshot.objects.none()
+
+    backends = get_available_backends()
+    backend_names: list[str] = []
+    configured_backend = SEARCH_BACKEND_CONFIG.SEARCH_BACKEND_ENGINE
+    if search_mode == "deep":
+        if "ripgrep" in backends:
+            backend_names.append("ripgrep")
+        backend_names.extend(name for name in backends if name != "ripgrep")
+    elif configured_backend in backends:
+        backend_names.append(configured_backend)
+    elif "ripgrep" in backends:
+        backend_names.append("ripgrep")
+    else:
+        get_backend()
+        return Snapshot.objects.none()
+
+    snapshot_pks: list[str] = []
+    errors: list[Exception] = []
+    successful_backends = 0
+    try:
+        for backend_name in backend_names:
+            backend = backends[backend_name]
             try:
-                backend.index(snapshot_id=str(snap.id), texts=texts)
+                if backend_name == "ripgrep":
+                    snapshot_pks.extend(backend.search(query, search_mode=search_mode))
+                else:
+                    snapshot_pks.extend(backend.search(query))
+                successful_backends += 1
             except Exception as err:
-                stderr()
-                stderr(
-                    f'[X] The search backend threw an exception={err}:',
-                color='red',
-                )
-
-@enforce_types
-def query_search_index(query: str, out_dir: Path=OUTPUT_DIR) -> QuerySet:
-    from core.models import Snapshot
-
-    if search_backend_enabled():
-        backend = import_backend()
-        try:
-            snapshot_ids = backend.search(query)
-        except Exception as err:
-            stderr()
-            stderr(
-                    f'[X] The search backend threw an exception={err}:',
-                color='red',
-                )
-            raise
-        else:
-            # TODO preserve ordering from backend
-            qsearch = Snapshot.objects.filter(pk__in=snapshot_ids)
-            return qsearch
-    
-    return Snapshot.objects.none()
-
-@enforce_types
-def flush_search_index(snapshots: QuerySet):
-    if not indexing_enabled() or not snapshots:
-        return
-    backend = import_backend()
-    snapshot_ids=(str(pk) for pk in snapshots.values_list('pk',flat=True))
-    try:
-        backend.flush(snapshot_ids)
+                errors.append(err)
+                if search_mode != "deep":
+                    raise
     except Exception as err:
         stderr()
         stderr(
-            f'[X] The search backend threw an exception={err}:',
-        color='red',
+            f"[X] The search backend threw an exception={err}:",
+            color="red",
         )
+        raise
+    else:
+        if not successful_backends and errors and search_mode == "deep":
+            raise errors[0]
+        return Snapshot.objects.filter(pk__in=list(dict.fromkeys(snapshot_pks)))
+
 
 @enforce_types
-def index_links(links: Union[List[Link],None], out_dir: Path=OUTPUT_DIR):
-    if not links:
+def flush_search_index(snapshots: QuerySet) -> None:
+    """
+    Remove snapshots from the search index.
+    """
+    if not SEARCH_BACKEND_CONFIG.USE_INDEXING_BACKEND or not snapshots:
         return
 
-    from core.models import Snapshot, ArchiveResult
+    backend = get_backend()
+    snapshot_pks = [str(pk) for pk in snapshots.values_list("pk", flat=True)]
 
-    for link in links:
-        snap = Snapshot.objects.filter(url=link.url).first()
-        if snap: 
-            results = ArchiveResult.objects.indexable().filter(snapshot=snap)
-            log_index_started(link.url)
-            try:
-                texts = get_indexable_content(results)
-            except Exception as err:
-                stderr()
-                stderr(
-                    f'[X] An Exception ocurred reading the indexable content={err}:',
-                    color='red',
-                    ) 
-            else:
-                write_search_index(link, texts, out_dir=out_dir)
+    try:
+        backend.flush(snapshot_pks)
+    except Exception as err:
+        stderr()
+        stderr(
+            f"[X] The search backend threw an exception={err}:",
+            color="red",
+        )

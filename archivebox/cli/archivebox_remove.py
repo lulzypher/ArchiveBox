@@ -1,82 +1,112 @@
 #!/usr/bin/env python3
 
-__package__ = 'archivebox.cli'
-__command__ = 'archivebox remove'
+__package__ = "archivebox.cli"
+__command__ = "archivebox remove"
 
-import sys
-import argparse
+import shutil
+from pathlib import Path
+from collections.abc import Iterable
 
-from typing import Optional, List, IO
+import rich_click as click
 
-from ..main import remove
-from ..util import docstring
-from ..config import OUTPUT_DIR
-from ..logging_util import SmartFormatter, accept_stdin
+from django.db.models import QuerySet
+
+from archivebox.config import DATA_DIR
+from archivebox.config.constants import CONSTANTS
+from archivebox.config.django import setup_django
+from archivebox.misc.util import enforce_types, docstring
+from archivebox.misc.checks import check_data_folder
+from archivebox.misc.logging_util import (
+    log_list_started,
+    log_list_finished,
+    log_removal_started,
+    log_removal_finished,
+    TimedProgress,
+)
 
 
+@enforce_types
+def remove(
+    filter_patterns: Iterable[str] = (),
+    filter_type: str = "exact",
+    snapshots: QuerySet | None = None,
+    after: float | None = None,
+    before: float | None = None,
+    yes: bool = False,
+    delete: bool = False,
+    out_dir: Path = DATA_DIR,
+) -> QuerySet:
+    """Remove the specified URLs from the archive"""
+
+    setup_django()
+    check_data_folder()
+
+    from archivebox.cli.archivebox_search import get_snapshots
+
+    pattern_list = list(filter_patterns)
+
+    log_list_started(pattern_list or None, filter_type)
+    timer = TimedProgress(360, prefix="      ")
+    try:
+        snapshots = get_snapshots(
+            snapshots=snapshots,
+            filter_patterns=pattern_list or None,
+            filter_type=filter_type,
+            after=after,
+            before=before,
+        )
+    finally:
+        timer.end()
+
+    if not snapshots.exists():
+        log_removal_finished(0, 0)
+        raise SystemExit(1)
+
+    log_list_finished(snapshots)
+    log_removal_started(snapshots, yes=yes, delete=delete)
+
+    timer = TimedProgress(360, prefix="      ")
+    try:
+        for snapshot in snapshots:
+            if delete:
+                shutil.rmtree(snapshot.output_dir, ignore_errors=True)
+                legacy_path = CONSTANTS.ARCHIVE_DIR / snapshot.timestamp
+                if legacy_path.is_symlink():
+                    legacy_path.unlink(missing_ok=True)
+    finally:
+        timer.end()
+
+    to_remove = snapshots.count()
+
+    from archivebox.search import flush_search_index
+    from archivebox.core.models import Snapshot
+
+    flush_search_index(snapshots=snapshots)
+    snapshots.delete()
+    all_snapshots = Snapshot.objects.all()
+    log_removal_finished(all_snapshots.count(), to_remove)
+
+    return all_snapshots
+
+
+@click.command()
+@click.option("--yes", is_flag=True, help="Remove links instantly without prompting to confirm")
+@click.option("--delete", is_flag=True, help="Delete the archived content and metadata folder in addition to removing from index")
+@click.option("--before", type=float, help="Remove only URLs bookmarked before timestamp")
+@click.option("--after", type=float, help="Remove only URLs bookmarked after timestamp")
+@click.option(
+    "--filter-type",
+    "-f",
+    type=click.Choice(("exact", "substring", "domain", "regex", "tag")),
+    default="exact",
+    help="Type of pattern matching to use when filtering URLs",
+)
+@click.argument("filter_patterns", nargs=-1)
 @docstring(remove.__doc__)
-def main(args: Optional[List[str]]=None, stdin: Optional[IO]=None, pwd: Optional[str]=None) -> None:
-    parser = argparse.ArgumentParser(
-        prog=__command__,
-        description=remove.__doc__,
-        add_help=True,
-        formatter_class=SmartFormatter,
-    )
-    parser.add_argument(
-        '--yes', # '-y',
-        action='store_true',
-        help='Remove links instantly without prompting to confirm.',
-    )
-    parser.add_argument(
-        '--delete', # '-r',
-        action='store_true',
-        help=(
-            "In addition to removing the link from the index, "
-            "also delete its archived content and metadata folder."
-        ),
-    )
-    parser.add_argument(
-        '--before', #'-b',
-        type=float,
-        help="List only URLs bookmarked before the given timestamp.",
-        default=None,
-    )
-    parser.add_argument(
-        '--after', #'-a',
-        type=float,
-        help="List only URLs bookmarked after the given timestamp.",
-        default=None,
-    )
-    parser.add_argument(
-        '--filter-type',
-        type=str,
-        choices=('exact', 'substring', 'domain', 'regex','tag'),
-        default='exact',
-        help='Type of pattern matching to use when filtering URLs',
-    )
-    parser.add_argument(
-        'filter_patterns',
-        nargs='*',
-        type=str,
-        help='URLs matching this filter pattern will be removed from the index.'
-    )
-    command = parser.parse_args(args or ())
-    
-    filter_str = None
-    if not command.filter_patterns:
-        filter_str = accept_stdin(stdin)
+def main(**kwargs):
+    """Remove the specified URLs from the archive"""
+    remove(**kwargs)
 
-    remove(
-        filter_str=filter_str,
-        filter_patterns=command.filter_patterns,
-        filter_type=command.filter_type,
-        before=command.before,
-        after=command.after,
-        yes=command.yes,
-        delete=command.delete,
-        out_dir=pwd or OUTPUT_DIR,
-    )
-    
 
-if __name__ == '__main__':
-    main(args=sys.argv[1:], stdin=sys.stdin)
+if __name__ == "__main__":
+    main()
