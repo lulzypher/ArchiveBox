@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="https://archivebox.io/icon.png" height="90" alt="ArchiveTeam NFT logo" />
-  <h1>ArchiveTeam NFT</h1>
+  <img src="website/assets/logo-decentralized-archive-box.svg" height="90" alt="Decentralized Archive Box logo" />
+  <h1>Decentralized Archive Box</h1>
   <p><strong>A decentralized team for preserving the web.</strong></p>
   <p>
     <a href="#quickstart">Quickstart</a> ·
@@ -15,7 +15,7 @@
 
 ## What this project is
 
-ArchiveTeam NFT is a decentralized archiving coordination layer built in the ArchiveBox codebase.
+Decentralized Archive Box is a decentralized archiving coordination layer built in the ArchiveBox codebase.
 
 It enables a network of peers to:
 
