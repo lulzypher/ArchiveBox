@@ -205,7 +205,7 @@ Tray menu actions:
 If your desktop environment does not support tray icons, use:
 
 ```bash
-archivebox tray --text
+archivebox tray --headless
 ```
 
 ---
