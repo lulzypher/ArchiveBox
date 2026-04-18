@@ -84,6 +84,10 @@ dependencies = [
     "abx-dl>=1.10.30",        # shared ArchiveBox downloader package with install_args-only overrides
     ### UUID7 backport for Python <3.14
     "uuid7>=0.1.0; python_version < '3.14'",  # provides the uuid_extensions module on Python 3.13
+    ### Desktop tray app dependencies
+    "pillow>=11.3.0",        # tray icon rendering for pystray
+    "pystray>=0.19.5",       # cross-platform system tray integration
+    "python-xlib>=0.33; sys_platform == 'linux'", # required by pystray on Linux
 ]
 
 [project.optional-dependencies]

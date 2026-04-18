@@ -51,11 +51,13 @@ class ArchiveBoxGroup(click.Group):
         "config": "archivebox.cli.archivebox_config.main",
         "schedule": "archivebox.cli.archivebox_schedule.main",
         "server": "archivebox.cli.archivebox_server.main",
+        "tray": "archivebox.cli.archivebox_tray.main",
         "shell": "archivebox.cli.archivebox_shell.main",
         "manage": "archivebox.cli.archivebox_manage.main",
         # Introspection commands
         "pluginmap": "archivebox.cli.archivebox_pluginmap.main",
     }
+    data_folder_optional_archive_commands = {"tray"}
     legacy_model_commands = {
         "crawl": "archivebox.cli.archivebox_crawl_compat.main",
         "snapshot": "archivebox.cli.archivebox_snapshot_compat.main",
@@ -173,7 +175,8 @@ def cli(ctx, help=False):
             from archivebox.misc.checks import check_data_folder
 
             setup_django()
-            check_data_folder()
+            if subcommand not in ArchiveBoxGroup.data_folder_optional_archive_commands:
+                check_data_folder()
         except Exception as e:
             print(f"[red][X] Error setting up Django or checking data folder: {e}[/red]", file=sys.stderr)
             if subcommand not in ("manage", "shell"):  # not all management commands need django to be setup beforehand

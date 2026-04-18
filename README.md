@@ -186,6 +186,28 @@ archivebox version
 pytest -q tests/test_archiveteam_mvp.py tests/test_archiveteam_api.py
 ```
 
+### Run as a system tray app (Linux/macOS/Windows)
+
+After bootstrap + venv activation, launch:
+
+```bash
+archivebox tray
+```
+
+Tray menu actions:
+- Start/Stop ArchiveBox server
+- Start/Stop background worker (`archivebox run --daemon`)
+- Open Web UI
+- Open Admin UI
+- Show status
+- Quit
+
+If your desktop environment does not support tray icons, use:
+
+```bash
+archivebox tray --text
+```
+
 ---
 
 ## API reference
