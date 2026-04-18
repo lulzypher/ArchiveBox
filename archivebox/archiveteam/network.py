@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from urllib.parse import unquote, urlparse
 
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -36,6 +37,13 @@ class ArchiveTeamNetwork:
     """In-memory + optional JSON-persisted MVP coordinator for ArchiveTeam."""
 
     KEY_PREFIX = "AT"
+    DEFAULT_BLOCKED_URL_TERMS = (
+        "csam",
+        "child-abuse",
+        "illegal-child-content",
+        "minor-sex",
+    )
+    DEFAULT_BLOCKED_HOSTS = ()
 
     def __init__(
         self,
@@ -43,15 +51,29 @@ class ArchiveTeamNetwork:
         pin_window_hours: int = 24,
         heartbeat_ttl_seconds: int = 90,
         now_fn: Optional[Callable[[], datetime]] = None,
+        blocked_url_terms: Optional[List[str]] = None,
+        blocked_hosts: Optional[List[str]] = None,
     ) -> None:
         self.storage_path = Path(storage_path) if storage_path else None
         self.pin_window = timedelta(hours=pin_window_hours)
         self.heartbeat_ttl_seconds = heartbeat_ttl_seconds
         self.now_fn = now_fn or utcnow
+        self.blocked_url_terms = tuple(
+            (term or "").strip().lower()
+            for term in (blocked_url_terms or list(self.DEFAULT_BLOCKED_URL_TERMS))
+            if (term or "").strip()
+        )
+        self.blocked_hosts = {
+            (host or "").strip().lower()
+            for host in (blocked_hosts or list(self.DEFAULT_BLOCKED_HOSTS))
+            if (host or "").strip()
+        }
 
         self.users: Dict[str, Dict[str, Any]] = {}
         self.requests: Dict[str, Dict[str, Any]] = {}
         self.archives: Dict[str, Dict[str, Any]] = {}
+        self.collections: Dict[str, Dict[str, Any]] = {}
+        self.collection_submissions: Dict[str, Dict[str, Any]] = {}
         self.ledger: List[Dict[str, Any]] = []
         self.online_nodes: Dict[str, str] = {}
         self.login_challenges: Dict[str, Dict[str, str]] = {}
@@ -231,6 +253,7 @@ class ArchiveTeamNetwork:
             raise ArchiveTeamError("Only worker accounts can submit requests.")
         if not url.startswith(("http://", "https://")):
             raise ArchiveTeamError("URL must start with http:// or https://")
+        self._assert_url_allowed(url)
 
         mode = ArchiveMode(archive_mode)
         request_id = secrets.token_hex(12)
@@ -374,6 +397,219 @@ class ArchiveTeamNetwork:
         self._save()
         return self._clone(archive)
 
+    # -------------------------------------------------------------------------
+    # Collections
+    # -------------------------------------------------------------------------
+
+    def create_collection(
+        self,
+        owner_public_key: str,
+        name: str,
+        description: str = "",
+        is_private: bool = False,
+        allow_submissions: bool = False,
+        forked_from: str = "",
+    ) -> Dict[str, Any]:
+        owner_key = self.normalize_public_key(owner_public_key)
+        self._require_user(owner_key)
+        self._validate_collection_fields(name=name, description=description)
+
+        collection_id = secrets.token_hex(12)
+        collection = {
+            "collection_id": collection_id,
+            "owner_public_key": owner_key,
+            "name": name.strip(),
+            "description": description.strip(),
+            "is_private": is_private,
+            "allow_submissions": allow_submissions,
+            "archives": [],
+            "forked_from": forked_from.strip(),
+            "created_at": self._now().isoformat(),
+            "updated_at": self._now().isoformat(),
+        }
+        self.collections[collection_id] = collection
+        self._save()
+        return self._clone(collection)
+
+    def get_collection(self, collection_id: str, viewer_public_key: Optional[str] = None) -> Dict[str, Any]:
+        collection = self._require_collection(collection_id)
+        viewer_key = self.normalize_public_key(viewer_public_key) if viewer_public_key else ""
+        self._assert_collection_visible(collection, viewer_key)
+        return self._clone(collection)
+
+    def list_collections(
+        self,
+        viewer_public_key: Optional[str] = None,
+        owner_public_key: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        viewer_key = self.normalize_public_key(viewer_public_key) if viewer_public_key else ""
+        owner_key = self.normalize_public_key(owner_public_key) if owner_public_key else ""
+
+        results: List[Dict[str, Any]] = []
+        for collection in self.collections.values():
+            if owner_key and collection["owner_public_key"] != owner_key:
+                continue
+            if collection["is_private"] and collection["owner_public_key"] != viewer_key:
+                continue
+            results.append(self._clone(collection))
+        results.sort(key=lambda row: row["created_at"], reverse=True)
+        return results
+
+    def update_collection(
+        self,
+        owner_public_key: str,
+        collection_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        is_private: Optional[bool] = None,
+        allow_submissions: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        owner_key = self.normalize_public_key(owner_public_key)
+        collection = self._require_collection(collection_id)
+        self._assert_collection_owner(collection, owner_key)
+
+        next_name = collection["name"] if name is None else name
+        next_description = collection["description"] if description is None else description
+        self._validate_collection_fields(name=next_name, description=next_description)
+
+        if name is not None:
+            collection["name"] = name.strip()
+        if description is not None:
+            collection["description"] = description.strip()
+        if is_private is not None:
+            collection["is_private"] = is_private
+        if allow_submissions is not None:
+            collection["allow_submissions"] = allow_submissions
+
+        collection["updated_at"] = self._now().isoformat()
+        self._save()
+        return self._clone(collection)
+
+    def delete_collection(self, owner_public_key: str, collection_id: str) -> None:
+        owner_key = self.normalize_public_key(owner_public_key)
+        collection = self._require_collection(collection_id)
+        self._assert_collection_owner(collection, owner_key)
+
+        submission_ids = [
+            submission_id
+            for submission_id, submission in self.collection_submissions.items()
+            if submission["collection_id"] == collection_id
+        ]
+        for submission_id in submission_ids:
+            del self.collection_submissions[submission_id]
+        del self.collections[collection_id]
+        self._save()
+
+    def add_archive_to_collection(
+        self,
+        owner_public_key: str,
+        collection_id: str,
+        archive_id: str,
+    ) -> Dict[str, Any]:
+        owner_key = self.normalize_public_key(owner_public_key)
+        collection = self._require_collection(collection_id)
+        self._assert_collection_owner(collection, owner_key)
+        self._require_archive(archive_id)
+
+        if archive_id not in collection["archives"]:
+            collection["archives"].append(archive_id)
+            collection["updated_at"] = self._now().isoformat()
+            self._save()
+        return self._clone(collection)
+
+    def fork_collection(
+        self,
+        forker_public_key: str,
+        source_collection_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        forker_key = self.normalize_public_key(forker_public_key)
+        self._require_user(forker_key)
+        source = self._require_collection(source_collection_id)
+        self._assert_collection_visible(source, forker_key)
+
+        clone_name = name or f"Fork of {source['name']}"
+        clone_description = description if description is not None else source["description"]
+        fork = self.create_collection(
+            owner_public_key=forker_key,
+            name=clone_name,
+            description=clone_description,
+            is_private=False,
+            allow_submissions=False,
+            forked_from=source_collection_id,
+        )
+        # Keep archives in insertion order.
+        self.collections[fork["collection_id"]]["archives"] = list(source["archives"])
+        self.collections[fork["collection_id"]]["updated_at"] = self._now().isoformat()
+        self._save()
+        return self._clone(self.collections[fork["collection_id"]])
+
+    def submit_collection_entry(
+        self,
+        submitter_public_key: str,
+        collection_id: str,
+        archive_id: str,
+        note: str = "",
+    ) -> Dict[str, Any]:
+        submitter_key = self.normalize_public_key(submitter_public_key)
+        self._require_user(submitter_key)
+        collection = self._require_collection(collection_id)
+        self._require_archive(archive_id)
+
+        if collection["owner_public_key"] == submitter_key:
+            return self.add_archive_to_collection(
+                owner_public_key=submitter_key,
+                collection_id=collection_id,
+                archive_id=archive_id,
+            )
+
+        if collection["is_private"]:
+            raise ArchiveTeamError("Cannot submit to a private collection.")
+        if not collection["allow_submissions"]:
+            raise ArchiveTeamError("Collection owner has disabled submissions.")
+
+        submission_id = secrets.token_hex(12)
+        submission = {
+            "submission_id": submission_id,
+            "collection_id": collection_id,
+            "archive_id": archive_id,
+            "submitter_public_key": submitter_key,
+            "note": note.strip(),
+            "status": "PENDING",
+            "reviewed_at": "",
+            "reviewed_by": "",
+            "created_at": self._now().isoformat(),
+        }
+        self.collection_submissions[submission_id] = submission
+        self._save()
+        return self._clone(submission)
+
+    def review_collection_submission(
+        self,
+        owner_public_key: str,
+        submission_id: str,
+        approve: bool,
+    ) -> Dict[str, Any]:
+        owner_key = self.normalize_public_key(owner_public_key)
+        submission = self._require_collection_submission(submission_id)
+        collection = self._require_collection(submission["collection_id"])
+        self._assert_collection_owner(collection, owner_key)
+
+        if submission["status"] != "PENDING":
+            raise ArchiveTeamError("Submission has already been reviewed.")
+
+        submission["status"] = "APPROVED" if approve else "DENIED"
+        submission["reviewed_by"] = owner_key
+        submission["reviewed_at"] = self._now().isoformat()
+
+        if approve and submission["archive_id"] not in collection["archives"]:
+            collection["archives"].append(submission["archive_id"])
+            collection["updated_at"] = self._now().isoformat()
+
+        self._save()
+        return self._clone(submission)
+
     def record_archive_serve(
         self,
         server_public_key: str,
@@ -461,6 +697,8 @@ class ArchiveTeamNetwork:
             "users": self.users,
             "requests": self.requests,
             "archives": self.archives,
+            "collections": self.collections,
+            "collection_submissions": self.collection_submissions,
             "ledger": self.ledger,
             "online_nodes": self.online_nodes,
             "login_challenges": self.login_challenges,
@@ -474,6 +712,8 @@ class ArchiveTeamNetwork:
         self.users = raw.get("users", {})
         self.requests = raw.get("requests", {})
         self.archives = raw.get("archives", {})
+        self.collections = raw.get("collections", {})
+        self.collection_submissions = raw.get("collection_submissions", {})
         self.ledger = raw.get("ledger", [])
         self.online_nodes = raw.get("online_nodes", {})
         self.login_challenges = raw.get("login_challenges", {})
@@ -531,3 +771,43 @@ class ArchiveTeamNetwork:
         if not archive:
             raise ArchiveTeamError(f"Unknown archive: {archive_id}")
         return archive
+
+    def _require_collection(self, collection_id: str) -> Dict[str, Any]:
+        collection = self.collections.get(collection_id)
+        if not collection:
+            raise ArchiveTeamError(f"Unknown collection: {collection_id}")
+        return collection
+
+    def _require_collection_submission(self, submission_id: str) -> Dict[str, Any]:
+        submission = self.collection_submissions.get(submission_id)
+        if not submission:
+            raise ArchiveTeamError(f"Unknown collection submission: {submission_id}")
+        return submission
+
+    def _validate_collection_fields(self, name: str, description: str) -> None:
+        if not (name or "").strip():
+            raise ArchiveTeamError("Collection name is required.")
+        if len((name or "").strip()) > 120:
+            raise ArchiveTeamError("Collection name must be 120 characters or less.")
+        if len(description or "") > 5000:
+            raise ArchiveTeamError("Collection description must be 5000 characters or less.")
+
+    def _assert_collection_owner(self, collection: Dict[str, Any], public_key: str) -> None:
+        if collection["owner_public_key"] != public_key:
+            raise ArchiveTeamError("Only the collection owner can perform this action.")
+
+    def _assert_collection_visible(self, collection: Dict[str, Any], viewer_public_key: str) -> None:
+        if collection["is_private"] and collection["owner_public_key"] != viewer_public_key:
+            raise ArchiveTeamError("Collection is private.")
+
+    def _assert_url_allowed(self, url: str) -> None:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        decoded_url = unquote(url).lower()
+
+        if host and host in self.blocked_hosts:
+            raise ArchiveTeamError("URL host is blocked by safety policy.")
+
+        for term in self.blocked_url_terms:
+            if term in decoded_url:
+                raise ArchiveTeamError("URL blocked by safety policy.")

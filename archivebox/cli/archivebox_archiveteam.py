@@ -65,6 +65,55 @@ def main(args: Optional[List[str]] = None, stdin: Optional[IO] = None, pwd: Opti
     fulfill.add_argument('--content-hash', required=True)
     fulfill.add_argument('--storage-uri', required=True)
 
+    collection_create = subparsers.add_parser('collection-create', help='Create a collection.')
+    collection_create.add_argument('--owner-public-key', required=True)
+    collection_create.add_argument('--name', required=True)
+    collection_create.add_argument('--description', default='')
+    collection_create.add_argument('--private', choices=('true', 'false'), default='false')
+    collection_create.add_argument('--allow-submissions', choices=('true', 'false'), default='false')
+
+    collection_update = subparsers.add_parser('collection-update', help='Update a collection.')
+    collection_update.add_argument('--owner-public-key', required=True)
+    collection_update.add_argument('--collection-id', required=True)
+    collection_update.add_argument('--name')
+    collection_update.add_argument('--description')
+    collection_update.add_argument('--private', choices=('true', 'false'))
+    collection_update.add_argument('--allow-submissions', choices=('true', 'false'))
+
+    collection_delete = subparsers.add_parser('collection-delete', help='Delete a collection.')
+    collection_delete.add_argument('--owner-public-key', required=True)
+    collection_delete.add_argument('--collection-id', required=True)
+
+    collection_get = subparsers.add_parser('collection-get', help='Get collection details.')
+    collection_get.add_argument('--collection-id', required=True)
+    collection_get.add_argument('--viewer-public-key', default='')
+
+    collection_list = subparsers.add_parser('collection-list', help='List collections visible to viewer.')
+    collection_list.add_argument('--viewer-public-key', default='')
+    collection_list.add_argument('--owner-public-key', default='')
+
+    collection_add_archive = subparsers.add_parser('collection-add-archive', help='Owner adds archive to collection.')
+    collection_add_archive.add_argument('--owner-public-key', required=True)
+    collection_add_archive.add_argument('--collection-id', required=True)
+    collection_add_archive.add_argument('--archive-id', required=True)
+
+    collection_submit = subparsers.add_parser('collection-submit', help='Submit archive to owner-moderated collection.')
+    collection_submit.add_argument('--submitter-public-key', required=True)
+    collection_submit.add_argument('--collection-id', required=True)
+    collection_submit.add_argument('--archive-id', required=True)
+    collection_submit.add_argument('--note', default='')
+
+    collection_review = subparsers.add_parser('collection-review', help='Owner approves/denies collection submission.')
+    collection_review.add_argument('--owner-public-key', required=True)
+    collection_review.add_argument('--submission-id', required=True)
+    collection_review.add_argument('--approve', choices=('true', 'false'), required=True)
+
+    collection_fork = subparsers.add_parser('collection-fork', help='Fork/copy an existing collection.')
+    collection_fork.add_argument('--forker-public-key', required=True)
+    collection_fork.add_argument('--source-collection-id', required=True)
+    collection_fork.add_argument('--name', default='')
+    collection_fork.add_argument('--description', default='')
+
     search = subparsers.add_parser('search', help='Search available online archives.')
     search.add_argument('--query', default='')
 
@@ -134,6 +183,91 @@ def main(args: Optional[List[str]] = None, stdin: Optional[IO] = None, pwd: Opti
             storage_uri=command.storage_uri,
         )
         print(json.dumps(archive, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'collection-create':
+        collection = network.create_collection(
+            owner_public_key=command.owner_public_key,
+            name=command.name,
+            description=command.description,
+            is_private=command.private == 'true',
+            allow_submissions=command.allow_submissions == 'true',
+        )
+        print(json.dumps(collection, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'collection-update':
+        collection = network.update_collection(
+            owner_public_key=command.owner_public_key,
+            collection_id=command.collection_id,
+            name=command.name,
+            description=command.description,
+            is_private=None if command.private is None else command.private == 'true',
+            allow_submissions=None if command.allow_submissions is None else command.allow_submissions == 'true',
+        )
+        print(json.dumps(collection, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'collection-delete':
+        network.delete_collection(
+            owner_public_key=command.owner_public_key,
+            collection_id=command.collection_id,
+        )
+        print(json.dumps({'ok': True}, indent=2))
+        return
+
+    if command.action == 'collection-get':
+        collection = network.get_collection(
+            collection_id=command.collection_id,
+            viewer_public_key=command.viewer_public_key or None,
+        )
+        print(json.dumps(collection, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'collection-list':
+        collections = network.list_collections(
+            viewer_public_key=command.viewer_public_key or None,
+            owner_public_key=command.owner_public_key or None,
+        )
+        print(json.dumps(collections, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'collection-add-archive':
+        collection = network.add_archive_to_collection(
+            owner_public_key=command.owner_public_key,
+            collection_id=command.collection_id,
+            archive_id=command.archive_id,
+        )
+        print(json.dumps(collection, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'collection-submit':
+        submission = network.submit_collection_entry(
+            submitter_public_key=command.submitter_public_key,
+            collection_id=command.collection_id,
+            archive_id=command.archive_id,
+            note=command.note,
+        )
+        print(json.dumps(submission, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'collection-review':
+        submission = network.review_collection_submission(
+            owner_public_key=command.owner_public_key,
+            submission_id=command.submission_id,
+            approve=command.approve == 'true',
+        )
+        print(json.dumps(submission, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'collection-fork':
+        fork = network.fork_collection(
+            forker_public_key=command.forker_public_key,
+            source_collection_id=command.source_collection_id,
+            name=command.name or None,
+            description=command.description if command.description else None,
+        )
+        print(json.dumps(fork, indent=2, sort_keys=True))
         return
 
     if command.action == 'search':

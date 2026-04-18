@@ -190,3 +190,99 @@ def test_non_worker_cannot_submit():
             url="https://example.com",
             archive_mode=ArchiveMode.FULL_WARC.value,
         )
+
+
+def test_collection_crud_submission_review_and_fork():
+    network = ArchiveTeamNetwork()
+    owner_keys, owner = _new_user(network, "owner", "US")
+    submitter_keys, submitter = _new_user(network, "submitter", "US")
+    forker_keys, forker = _new_user(network, "forker", "US")
+
+    owner_node = ArchiveTeamNode(network, owner_keys["private_key"], owner_keys["public_key"])
+    submitter_node = ArchiveTeamNode(network, submitter_keys["private_key"], submitter_keys["public_key"])
+    owner_node.heartbeat("US")
+    submitter_node.heartbeat("US")
+
+    req = owner_node.submit_request("https://example.net", ArchiveMode.FULL_WARC.value)
+    owner_node.poll_and_claim()
+    archive = owner_node.fulfill_claimed_request(req["request_id"], b"bytes", "ipfs://collection-test")
+
+    collection = network.create_collection(
+        owner_public_key=owner["display_public_key"],
+        name="Tech News",
+        description="Interesting links",
+        is_private=False,
+        allow_submissions=True,
+    )
+    assert collection["name"] == "Tech News"
+    assert collection["allow_submissions"] is True
+
+    submission = network.submit_collection_entry(
+        submitter_public_key=submitter["display_public_key"],
+        collection_id=collection["collection_id"],
+        archive_id=archive["archive_id"],
+        note="Great fit for this collection",
+    )
+    assert submission["status"] == "PENDING"
+
+    reviewed = network.review_collection_submission(
+        owner_public_key=owner["display_public_key"],
+        submission_id=submission["submission_id"],
+        approve=True,
+    )
+    assert reviewed["status"] == "APPROVED"
+
+    updated_collection = network.get_collection(
+        collection_id=collection["collection_id"],
+        viewer_public_key=owner["display_public_key"],
+    )
+    assert archive["archive_id"] in updated_collection["archives"]
+
+    fork = network.fork_collection(
+        forker_public_key=forker["display_public_key"],
+        source_collection_id=collection["collection_id"],
+        name="Forked Tech",
+    )
+    assert fork["forked_from"] == collection["collection_id"]
+    assert fork["archives"] == updated_collection["archives"]
+
+    network.update_collection(
+        owner_public_key=owner["display_public_key"],
+        collection_id=collection["collection_id"],
+        is_private=True,
+        allow_submissions=False,
+    )
+    with pytest.raises(ArchiveTeamError):
+        network.get_collection(
+            collection_id=collection["collection_id"],
+            viewer_public_key=submitter["display_public_key"],
+        )
+
+    network.delete_collection(
+        owner_public_key=owner["display_public_key"],
+        collection_id=collection["collection_id"],
+    )
+    with pytest.raises(ArchiveTeamError):
+        network.get_collection(collection_id=collection["collection_id"], viewer_public_key=owner["display_public_key"])
+
+
+def test_safety_filter_blocks_obviously_flagged_urls():
+    network = ArchiveTeamNetwork(
+        blocked_url_terms=["forbidden-term"],
+        blocked_hosts=["blocked.example"],
+    )
+    keys, user = _new_user(network, "safe-user", "US")
+
+    with pytest.raises(ArchiveTeamError):
+        network.submit_request(
+            requester_public_key=user["display_public_key"],
+            url="https://example.com/path/forbidden-term",
+            archive_mode=ArchiveMode.FULL_WARC.value,
+        )
+
+    with pytest.raises(ArchiveTeamError):
+        network.submit_request(
+            requester_public_key=user["display_public_key"],
+            url="https://blocked.example/safe",
+            archive_mode=ArchiveMode.FULL_WARC.value,
+        )
