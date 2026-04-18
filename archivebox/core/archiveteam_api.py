@@ -164,6 +164,51 @@ class ArchiveTeamAPIView(View):
             if endpoint.startswith("proposals/"):
                 return self._proposal_subroute(network, request, method, endpoint, body)
 
+            if method == "GET" and endpoint == "site/current":
+                return self._ok(network.get_site_state())
+
+            if method == "POST" and endpoint == "site/release":
+                session_key = self._require_session(network, request)
+                updated = network.set_site_release(
+                    actor_public_key=session_key,
+                    cid=body["cid"],
+                    version=body.get("version", ""),
+                    notes=body.get("notes", ""),
+                    proposal_id=body.get("proposal_id", ""),
+                )
+                return self._ok(updated)
+
+            if method == "POST" and endpoint == "site/pin-attest":
+                session_key = self._require_session(network, request)
+                attested = network.attest_site_pin(
+                    node_public_key=session_key,
+                    cid=body.get("cid", ""),
+                    pinned=bool(body.get("pinned", True)),
+                    pin_provider=body.get("pin_provider", ""),
+                    signature=body.get("signature", ""),
+                )
+                return self._ok(attested)
+
+            if method == "GET" and endpoint == "site/pinners":
+                cid = request.GET.get("cid", "")
+                online_only = request.GET.get("online_only", "true").lower() != "false"
+                pinned_only = request.GET.get("pinned_only", "true").lower() != "false"
+                pinners = network.list_site_pinners(
+                    cid=cid,
+                    online_only=online_only,
+                    pinned_only=pinned_only,
+                )
+                return self._ok(pinners)
+
+            if method == "GET" and endpoint == "site/health":
+                cid = request.GET.get("cid", "")
+                min_online_pinners = int(request.GET.get("min_online_pinners", "3"))
+                health = network.get_site_health(
+                    cid=cid,
+                    min_online_pinners=min_online_pinners,
+                )
+                return self._ok(health)
+
             if method == "POST" and endpoint == "collections":
                 session_key = self._require_session(network, request)
                 collection = network.create_collection(

@@ -343,3 +343,49 @@ def test_governance_proposal_author_close():
     closed = network.close_proposal(author["display_public_key"], proposal["proposal_id"])
     assert closed["status"] == "CLOSED"
     assert closed["result"] == "AUTHOR_CLOSED"
+
+
+def test_site_release_pinning_and_health_with_governance():
+    network = ArchiveTeamNetwork()
+    owner_keys, owner = _new_user(network, "owner", "US")
+    node1_keys, node1 = _new_user(network, "node1", "US")
+    node2_keys, node2 = _new_user(network, "node2", "US")
+    node3_keys, node3 = _new_user(network, "node3", "US")
+
+    # mark nodes online so health can count them
+    network.set_node_online(node1["display_public_key"])
+    network.set_node_online(node2["display_public_key"])
+    network.set_node_online(node3["display_public_key"])
+
+    proposal = network.create_proposal(
+        author_public_key=owner["display_public_key"],
+        title="Release site v1",
+        description="Publish canonical frontend CID",
+        change_type="SITE_RELEASE",
+        target="bafybeigdyrztw4b4k6z6l5y5vci4c3p6k2wrg7u2v5uqf5h3i3b7v5r5pu",
+        proposed_patch='{"cid":"bafybeigdyrztw4b4k6z6l5y5vci4c3p6k2wrg7u2v5uqf5h3i3b7v5r5pu","version":"1.0.0","notes":"Initial IPFS release"}',
+        quorum=2,
+        yes_threshold=0.5,
+    )
+    network.cast_proposal_vote(node1["display_public_key"], proposal["proposal_id"], "YES")
+    network.cast_proposal_vote(node2["display_public_key"], proposal["proposal_id"], "YES")
+    finalized = network.finalize_proposal(owner["display_public_key"], proposal["proposal_id"])
+    assert finalized["status"] == "APPROVED"
+
+    site = network.get_site_state()
+    assert site["current_cid"] == "bafybeigdyrztw4b4k6z6l5y5vci4c3p6k2wrg7u2v5uqf5h3i3b7v5r5pu"
+    assert site["version"] == "1.0.0"
+    assert site["proposal_id"] == proposal["proposal_id"]
+
+    # nodes attest they pin the site
+    network.attest_site_pin(node1["display_public_key"], pin_provider="local-ipfs")
+    network.attest_site_pin(node2["display_public_key"], pin_provider="local-ipfs")
+    network.attest_site_pin(node3["display_public_key"], pin_provider="pinning-service")
+
+    pinners = network.list_site_pinners()
+    assert len(pinners) == 3
+    assert all(row["cid"] == site["current_cid"] for row in pinners)
+
+    health = network.get_site_health(min_online_pinners=3)
+    assert health["healthy"] is True
+    assert health["online_pinners"] == 3

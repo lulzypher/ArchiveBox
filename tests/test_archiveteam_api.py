@@ -327,3 +327,115 @@ def test_archiveteam_api_governance_proposal_flow(tmp_path, monkeypatch):
     assert listed.status_code == 200
     rows = _json(listed)
     assert any(row["proposal_id"] == proposal["proposal_id"] for row in rows)
+
+
+def test_archiveteam_api_site_pinning_flow(tmp_path, monkeypatch):
+    out_dir = tmp_path / "api-site-data"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    state_file = out_dir / "archiveteam_state.json"
+    monkeypatch.setenv("ARCHIVETEAM_STATE_FILE", str(state_file))
+    setup_django(out_dir=Path(out_dir), check_db=False, in_memory_db=True)
+    client = Client()
+
+    owner_payload = _json(
+        client.post(
+            "/api/archiveteam/register",
+            data=json.dumps({"username": "owner", "country": "US", "is_worker": True}),
+            content_type="application/json",
+        )
+    )
+    node1_payload = _json(
+        client.post(
+            "/api/archiveteam/register",
+            data=json.dumps({"username": "node1", "country": "US", "is_worker": True}),
+            content_type="application/json",
+        )
+    )
+    node2_payload = _json(
+        client.post(
+            "/api/archiveteam/register",
+            data=json.dumps({"username": "node2", "country": "US", "is_worker": True}),
+            content_type="application/json",
+        )
+    )
+
+    from archivebox.archiveteam import ArchiveTeamNode, ArchiveTeamNetwork
+
+    temp_network = ArchiveTeamNetwork(storage_path=str(state_file))
+    owner_node = ArchiveTeamNode(
+        network=temp_network,
+        private_key=owner_payload["keys"]["private_key"],
+        public_key=owner_payload["keys"]["public_key"],
+    )
+    node1 = ArchiveTeamNode(
+        network=temp_network,
+        private_key=node1_payload["keys"]["private_key"],
+        public_key=node1_payload["keys"]["public_key"],
+    )
+    node2 = ArchiveTeamNode(
+        network=temp_network,
+        private_key=node2_payload["keys"]["private_key"],
+        public_key=node2_payload["keys"]["public_key"],
+    )
+
+    def login(display_public_key, node):
+        challenge = _json(
+            client.post(
+                "/api/archiveteam/login/challenge",
+                data=json.dumps({"public_key": display_public_key}),
+                content_type="application/json",
+            )
+        )["challenge"]
+        signature = node.sign_login_challenge(challenge)
+        login_resp = client.post(
+            "/api/archiveteam/login/complete",
+            data=json.dumps({"public_key": display_public_key, "signature": signature}),
+            content_type="application/json",
+        )
+        assert login_resp.status_code == 200
+        return _json(login_resp)["session_token"]
+
+    owner_session = login(owner_payload["user"]["display_public_key"], owner_node)
+    node1_session = login(node1_payload["user"]["display_public_key"], node1)
+    node2_session = login(node2_payload["user"]["display_public_key"], node2)
+
+    # mark nodes online before pin attestations so health can count them
+    for session in (node1_session, node2_session):
+        hb = client.post(
+            "/api/archiveteam/heartbeat",
+            data=json.dumps({"country_code": "US"}),
+            content_type="application/json",
+            HTTP_X_AT_SESSION=session,
+        )
+        assert hb.status_code == 200
+
+    cid = "bafybeigdyrztw4b4k6z6l5y5vci4c3p6k2wrg7u2v5uqf5h3i3b7v5r5pu"
+    release = client.post(
+        "/api/archiveteam/site/release",
+        data=json.dumps({"cid": cid, "version": "1.0.0", "notes": "Initial release"}),
+        content_type="application/json",
+        HTTP_X_AT_SESSION=owner_session,
+    )
+    assert release.status_code == 200
+    assert _json(release)["current_cid"] == cid
+
+    for session in (node1_session, node2_session):
+        attest = client.post(
+            "/api/archiveteam/site/pin-attest",
+            data=json.dumps({"pin_provider": "local-ipfs", "pinned": True}),
+            content_type="application/json",
+            HTTP_X_AT_SESSION=session,
+        )
+        assert attest.status_code == 200
+        assert _json(attest)["cid"] == cid
+
+    pinners = client.get("/api/archiveteam/site/pinners")
+    assert pinners.status_code == 200
+    assert len(_json(pinners)) == 2
+
+    health = client.get("/api/archiveteam/site/health?min_online_pinners=2")
+    assert health.status_code == 200
+    health_payload = _json(health)
+    assert health_payload["healthy"] is True
+    assert health_payload["online_pinners"] == 2

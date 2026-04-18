@@ -44,6 +44,14 @@ class ArchiveTeamNetwork:
         "minor-sex",
     )
     DEFAULT_BLOCKED_HOSTS = ()
+    DEFAULT_SITE_STATE = {
+        "current_cid": "",
+        "version": "",
+        "notes": "",
+        "updated_at": "",
+        "updated_by": "",
+        "proposal_id": "",
+    }
 
     def __init__(
         self,
@@ -75,6 +83,8 @@ class ArchiveTeamNetwork:
         self.collections: Dict[str, Dict[str, Any]] = {}
         self.collection_submissions: Dict[str, Dict[str, Any]] = {}
         self.proposals: Dict[str, Dict[str, Any]] = {}
+        self.site: Dict[str, Any] = self._clone(self.DEFAULT_SITE_STATE)
+        self.site_pin_attestations: Dict[str, Dict[str, Any]] = {}
         self.ledger: List[Dict[str, Any]] = []
         self.online_nodes: Dict[str, str] = {}
         self.login_challenges: Dict[str, Dict[str, str]] = {}
@@ -640,13 +650,14 @@ class ArchiveTeamNetwork:
         if not (0.0 < yes_threshold <= 1.0):
             raise ArchiveTeamError("yes_threshold must be greater than 0 and less than or equal to 1.")
 
+        change_type_value = (change_type or "").strip().upper()
         proposal_id = secrets.token_hex(12)
         proposal = {
             "proposal_id": proposal_id,
             "author_public_key": author_key,
             "title": title.strip(),
             "description": description.strip(),
-            "change_type": (change_type or "").strip(),
+            "change_type": change_type_value,
             "target": (target or "").strip(),
             "proposed_patch": proposed_patch or "",
             "status": "OPEN",
@@ -772,6 +783,8 @@ class ArchiveTeamNetwork:
                 "finalized_by": actor_key,
             }
         )
+        if result == "APPROVED":
+            self._apply_approved_proposal(actor_key, proposal)
         self._save()
         return self._clone(proposal)
 
@@ -798,6 +811,125 @@ class ArchiveTeamNetwork:
         )
         self._save()
         return self._clone(proposal)
+
+    # -------------------------------------------------------------------------
+    # Distributed site pinning state (Phase 3b)
+    # -------------------------------------------------------------------------
+
+    def get_site_state(self) -> Dict[str, Any]:
+        return self._clone(self.site)
+
+    def set_site_release(
+        self,
+        actor_public_key: str,
+        cid: str,
+        version: str = "",
+        notes: str = "",
+        proposal_id: str = "",
+    ) -> Dict[str, Any]:
+        actor_key = self.normalize_public_key(actor_public_key)
+        self._require_user(actor_key)
+        self._validate_site_cid(cid)
+
+        self.site = {
+            "current_cid": cid.strip(),
+            "version": (version or "").strip(),
+            "notes": (notes or "").strip(),
+            "updated_at": self._now().isoformat(),
+            "updated_by": actor_key,
+            "proposal_id": (proposal_id or "").strip(),
+        }
+        self._append_ledger_entry(
+            {
+                "event": "SiteReleaseUpdated",
+                "current_cid": self.site["current_cid"],
+                "version": self.site["version"],
+                "updated_by": actor_key,
+                "proposal_id": self.site["proposal_id"],
+            }
+        )
+        self._save()
+        return self._clone(self.site)
+
+    def attest_site_pin(
+        self,
+        node_public_key: str,
+        cid: str = "",
+        pinned: bool = True,
+        pin_provider: str = "",
+        signature: str = "",
+    ) -> Dict[str, Any]:
+        node_key = self.normalize_public_key(node_public_key)
+        self._require_user(node_key)
+        attested_cid = (cid or self.site.get("current_cid", "")).strip()
+        self._validate_site_cid(attested_cid)
+
+        attestation = {
+            "public_key": node_key,
+            "cid": attested_cid,
+            "pinned": bool(pinned),
+            "pin_provider": (pin_provider or "").strip(),
+            "signature": (signature or "").strip(),
+            "last_attested_at": self._now().isoformat(),
+        }
+        self.site_pin_attestations[node_key] = attestation
+        self._save()
+        return self._clone(attestation)
+
+    def list_site_pinners(
+        self,
+        cid: str = "",
+        online_only: bool = True,
+        pinned_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        wanted_cid = (cid or self.site.get("current_cid", "")).strip()
+        if wanted_cid:
+            self._validate_site_cid(wanted_cid)
+
+        rows: List[Dict[str, Any]] = []
+        for row in self.site_pin_attestations.values():
+            if wanted_cid and row["cid"] != wanted_cid:
+                continue
+            if pinned_only and not row["pinned"]:
+                continue
+            if online_only and not self.is_node_online(row["public_key"]):
+                continue
+            rows.append(self._clone(row))
+        rows.sort(key=lambda item: item["last_attested_at"], reverse=True)
+        return rows
+
+    def get_site_health(
+        self,
+        cid: str = "",
+        min_online_pinners: int = 3,
+    ) -> Dict[str, Any]:
+        if min_online_pinners < 0:
+            raise ArchiveTeamError("min_online_pinners must be 0 or greater.")
+
+        wanted_cid = (cid or self.site.get("current_cid", "")).strip()
+        if wanted_cid:
+            self._validate_site_cid(wanted_cid)
+
+        all_rows = [
+            self._clone(row)
+            for row in self.site_pin_attestations.values()
+            if (not wanted_cid or row["cid"] == wanted_cid)
+        ]
+        online_rows = [
+            row
+            for row in all_rows
+            if row["pinned"] and self.is_node_online(row["public_key"])
+        ]
+        unique_online_keys = sorted({row["public_key"] for row in online_rows})
+        return {
+            "cid": wanted_cid,
+            "current_cid": self.site.get("current_cid", ""),
+            "total_attestations": len(all_rows),
+            "online_pinners": len(unique_online_keys),
+            "required_online_pinners": int(min_online_pinners),
+            "healthy": len(unique_online_keys) >= int(min_online_pinners),
+            "online_public_keys": unique_online_keys,
+        }
 
     def record_archive_serve(
         self,
@@ -889,6 +1021,8 @@ class ArchiveTeamNetwork:
             "collections": self.collections,
             "collection_submissions": self.collection_submissions,
             "proposals": self.proposals,
+            "site": self.site,
+            "site_pin_attestations": self.site_pin_attestations,
             "ledger": self.ledger,
             "online_nodes": self.online_nodes,
             "login_challenges": self.login_challenges,
@@ -905,6 +1039,8 @@ class ArchiveTeamNetwork:
         self.collections = raw.get("collections", {})
         self.collection_submissions = raw.get("collection_submissions", {})
         self.proposals = raw.get("proposals", {})
+        self.site = raw.get("site", self._clone(self.DEFAULT_SITE_STATE))
+        self.site_pin_attestations = raw.get("site_pin_attestations", {})
         self.ledger = raw.get("ledger", [])
         self.online_nodes = raw.get("online_nodes", {})
         self.login_challenges = raw.get("login_challenges", {})
@@ -981,6 +1117,37 @@ class ArchiveTeamNetwork:
             raise ArchiveTeamError(f"Unknown proposal: {proposal_id}")
         return proposal
 
+    def _apply_approved_proposal(self, actor_key: str, proposal: Dict[str, Any]) -> None:
+        if proposal["change_type"] != "SITE_RELEASE":
+            return
+        site_release = self._extract_site_release_payload(proposal)
+        self.set_site_release(
+            actor_public_key=actor_key,
+            cid=site_release["cid"],
+            version=site_release["version"],
+            notes=site_release["notes"],
+            proposal_id=proposal["proposal_id"],
+        )
+
+    def _extract_site_release_payload(self, proposal: Dict[str, Any]) -> Dict[str, str]:
+        payload = {"cid": "", "version": "", "notes": ""}
+        proposed_patch = (proposal.get("proposed_patch") or "").strip()
+        if proposed_patch:
+            try:
+                patch_data = json.loads(proposed_patch)
+                if isinstance(patch_data, dict):
+                    payload["cid"] = str(patch_data.get("cid", "")).strip()
+                    payload["version"] = str(patch_data.get("version", "")).strip()
+                    payload["notes"] = str(patch_data.get("notes", "")).strip()
+            except json.JSONDecodeError:
+                # Backward-compatible fallback for non-JSON patches.
+                payload["notes"] = proposed_patch
+
+        if not payload["cid"]:
+            payload["cid"] = str(proposal.get("target", "")).strip()
+        self._validate_site_cid(payload["cid"])
+        return payload
+
     def _recount_proposal_votes(self, proposal: Dict[str, Any]) -> None:
         yes_count = 0
         no_count = 0
@@ -1025,3 +1192,15 @@ class ArchiveTeamNetwork:
         for term in self.blocked_url_terms:
             if term in decoded_url:
                 raise ArchiveTeamError("URL blocked by safety policy.")
+
+    @staticmethod
+    def _validate_site_cid(cid: str) -> None:
+        cid_value = (cid or "").strip()
+        if not cid_value:
+            raise ArchiveTeamError("Site CID is required.")
+        # Basic CID sanity checks (supporting common CIDv0/CIDv1 forms).
+        if cid_value.startswith("Qm") and len(cid_value) >= 46:
+            return
+        if cid_value.startswith("bafy") and len(cid_value) >= 20:
+            return
+        raise ArchiveTeamError("Invalid IPFS CID format.")
