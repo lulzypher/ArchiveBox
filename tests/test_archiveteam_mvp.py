@@ -345,6 +345,46 @@ def test_governance_proposal_author_close():
     assert closed["result"] == "AUTHOR_CLOSED"
 
 
+def test_governance_votes_are_weighted_by_ratio():
+    network = ArchiveTeamNetwork()
+    _, author = _new_user(network, "author", "US")
+    _, high_ratio_voter = _new_user(network, "high", "US")
+    _, low_ratio_voter = _new_user(network, "low", "US")
+
+    high_stats = network.users[network.normalize_public_key(high_ratio_voter["display_public_key"])]["stats"]
+    high_stats["files_served"] = 14
+    high_stats["requests_processed"] = 4
+    high_stats["files_requested"] = 1
+
+    low_stats = network.users[network.normalize_public_key(low_ratio_voter["display_public_key"])]["stats"]
+    low_stats["files_served"] = 0
+    low_stats["requests_processed"] = 0
+    low_stats["files_requested"] = 30
+
+    proposal = network.create_proposal(
+        author_public_key=author["display_public_key"],
+        title="Weighted vote check",
+        description="Ensure high-ratio contributors have more governance weight.",
+        change_type="POLICY",
+        quorum=2,
+        yes_threshold=0.6,
+    )
+    network.cast_proposal_vote(high_ratio_voter["display_public_key"], proposal["proposal_id"], "YES")
+    network.cast_proposal_vote(low_ratio_voter["display_public_key"], proposal["proposal_id"], "NO")
+
+    finalized = network.finalize_proposal(author["display_public_key"], proposal["proposal_id"])
+    assert finalized["status"] == "APPROVED"
+    assert finalized["yes_count"] == 1
+    assert finalized["no_count"] == 1
+    assert finalized["weighted_yes"] > finalized["weighted_no"]
+    assert finalized["votes"][network.normalize_public_key(high_ratio_voter["display_public_key"])]["vote_weight"] > 1.0
+    assert finalized["votes"][network.normalize_public_key(low_ratio_voter["display_public_key"])]["vote_weight"] == 0.1
+
+    high_summary = network.get_user_summary(high_ratio_voter["display_public_key"])
+    low_summary = network.get_user_summary(low_ratio_voter["display_public_key"])
+    assert high_summary["voting_power"] > low_summary["voting_power"]
+
+
 def test_site_release_pinning_and_health_with_governance():
     network = ArchiveTeamNetwork()
     owner_keys, owner = _new_user(network, "owner", "US")
@@ -459,4 +499,105 @@ def test_drm_hosts_are_blocked_by_content_policy():
             requester_public_key=user["display_public_key"],
             url="https://www.netflix.com/title/1234",
             archive_mode=ArchiveMode.MEDIA_YTDLP.value,
+        )
+
+
+def test_worker_serving_rules_and_capacity_are_enforced():
+    network = ArchiveTeamNetwork()
+    requester_keys, requester = _new_user(network, "requester", "US")
+    high_keys, high_ratio_requester = _new_user(network, "trusted", "US")
+    worker_keys, worker = _new_user(network, "worker", "US")
+
+    requester_node = ArchiveTeamNode(network, requester_keys["private_key"], requester_keys["public_key"])
+    high_node = ArchiveTeamNode(network, high_keys["private_key"], high_keys["public_key"])
+    worker_node = ArchiveTeamNode(network, worker_keys["private_key"], worker_keys["public_key"])
+
+    requester_node.heartbeat("US")
+    high_node.heartbeat("US")
+    worker_node.heartbeat("US")
+
+    # Boost one requester above the ratio threshold to validate filtering logic.
+    high_stats = network.users[network.normalize_public_key(high_ratio_requester["display_public_key"])]["stats"]
+    high_stats["files_served"] = 3
+    high_stats["requests_processed"] = 2
+    high_stats["files_requested"] = 1
+
+    rules = network.update_serving_rules(
+        public_key=worker["display_public_key"],
+        block_porn_links=True,
+        min_ratio_to_serve=1.0,
+        prioritize_followed_first=True,
+        followed_public_keys=[high_ratio_requester["display_public_key"]],
+        site_blacklist=["blocked.example"],
+        rules_md="deny: banned.example",
+    )
+    assert rules["block_porn_links"] is True
+    assert rules["min_ratio_to_serve"] == 1.0
+    assert network.normalize_public_key(high_ratio_requester["display_public_key"]) in rules["followed_public_keys"]
+
+    low_ratio_request = requester_node.submit_request("https://example.com/low", ArchiveMode.FULL_WARC.value)
+    porn_request = high_node.submit_request("https://example.com/porn", ArchiveMode.FULL_WARC.value)
+    blacklisted_request = high_node.submit_request("https://blocked.example/video", ArchiveMode.FULL_WARC.value)
+    rules_md_request = high_node.submit_request("https://banned.example/page", ArchiveMode.FULL_WARC.value)
+    eligible_request = high_node.submit_request("https://example.com/eligible", ArchiveMode.FULL_WARC.value)
+
+    candidates = network.get_request_candidates(worker["display_public_key"], limit=10)
+    candidate_ids = [candidate["request_id"] for candidate in candidates]
+    assert eligible_request["request_id"] in candidate_ids
+    assert low_ratio_request["request_id"] not in candidate_ids
+    assert porn_request["request_id"] not in candidate_ids
+    assert blacklisted_request["request_id"] not in candidate_ids
+    assert rules_md_request["request_id"] not in candidate_ids
+
+    settings = network.update_network_settings(
+        public_key=worker["display_public_key"],
+        max_jobs_per_day=1,
+        max_storage_gb_per_day=0.0001,
+    )
+    assert settings["max_jobs_per_day"] == 1
+    assert settings["max_storage_gb_per_day"] == 0.0001
+
+    claimed = network.claim_request(worker["display_public_key"], eligible_request["request_id"])
+    assert claimed["request_id"] == eligible_request["request_id"]
+
+    with pytest.raises(ArchiveTeamError):
+        network.claim_request(worker["display_public_key"], low_ratio_request["request_id"])
+
+    with pytest.raises(ArchiveTeamError):
+        network.fulfill_request(
+            worker_public_key=worker["display_public_key"],
+            request_id=eligible_request["request_id"],
+            content_hash="a" * 64,
+            storage_uri="ipfs://example?size_bytes=200000",
+        )
+
+
+def test_speed_limits_apply_as_daily_transfer_budgets():
+    network = ArchiveTeamNetwork()
+    requester_keys, requester = _new_user(network, "requester", "US")
+    worker_keys, worker = _new_user(network, "worker", "US")
+    requester_node = ArchiveTeamNode(network, requester_keys["private_key"], requester_keys["public_key"])
+    worker_node = ArchiveTeamNode(network, worker_keys["private_key"], worker_keys["public_key"])
+
+    requester_node.heartbeat("US")
+    worker_node.heartbeat("US")
+
+    request = requester_node.submit_request("https://example.com/large", ArchiveMode.FULL_WARC.value)
+    worker_node.poll_and_claim()
+    archive = worker_node.fulfill_claimed_request(
+        request_id=request["request_id"],
+        archive_bytes=b"archive bytes",
+        storage_uri="ipfs://large",
+    )
+    network.archives[archive["archive_id"]]["estimated_size_bytes"] = 11 * 1024 ** 3
+
+    network.update_network_settings(
+        public_key=worker["display_public_key"],
+        daily_upload_speed_mbps=1,
+    )
+    with pytest.raises(ArchiveTeamError):
+        network.record_archive_serve(
+            server_public_key=worker["display_public_key"],
+            requester_public_key=requester["display_public_key"],
+            archive_id=archive["archive_id"],
         )

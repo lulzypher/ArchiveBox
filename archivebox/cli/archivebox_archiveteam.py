@@ -73,6 +73,35 @@ def main(args: Optional[List[str]] = None, stdin: Optional[IO] = None, pwd: Opti
     list_open = subparsers.add_parser('list-open', help='List currently open requests.')
     list_open.add_argument('--worker-public-key', default='')
 
+    request_candidates = subparsers.add_parser('request-candidates', help='List worker-eligible requests after rules/capacity checks.')
+    request_candidates.add_argument('--public-key', required=True)
+    request_candidates.add_argument('--limit', type=int, default=20)
+
+    settings_network_get = subparsers.add_parser('settings-network-get', help='Get worker daily network/capacity settings.')
+    settings_network_get.add_argument('--public-key', required=True)
+
+    settings_network_update = subparsers.add_parser('settings-network-update', help='Update worker daily network/capacity settings.')
+    settings_network_update.add_argument('--public-key', required=True)
+    settings_network_update.add_argument('--max-jobs-per-day', type=int)
+    settings_network_update.add_argument('--max-storage-gb-per-day', type=float)
+    settings_network_update.add_argument('--max-upload-gb-per-day', type=float)
+    settings_network_update.add_argument('--max-download-gb-per-day', type=float)
+    settings_network_update.add_argument('--daily-upload-speed-mbps', type=int)
+    settings_network_update.add_argument('--daily-download-speed-mbps', type=int)
+
+    settings_rules_get = subparsers.add_parser('settings-rules-get', help='Get worker serving and policy rules.')
+    settings_rules_get.add_argument('--public-key', required=True)
+
+    settings_rules_update = subparsers.add_parser('settings-rules-update', help='Update worker serving and policy rules.')
+    settings_rules_update.add_argument('--public-key', required=True)
+    settings_rules_update.add_argument('--block-porn-links', choices=('true', 'false'))
+    settings_rules_update.add_argument('--min-ratio-to-serve', type=float)
+    settings_rules_update.add_argument('--prioritize-high-ratio-first', choices=('true', 'false'))
+    settings_rules_update.add_argument('--prioritize-followed-first', choices=('true', 'false'))
+    settings_rules_update.add_argument('--followed-public-key', action='append', default=[])
+    settings_rules_update.add_argument('--site-blacklist-host', action='append', default=[])
+    settings_rules_update.add_argument('--rules-md', default=None)
+
     claim = subparsers.add_parser('claim', help='Claim next available request for worker.')
     claim.add_argument('--public-key', required=True)
 
@@ -212,6 +241,53 @@ def main(args: Optional[List[str]] = None, stdin: Optional[IO] = None, pwd: Opti
     if command.action == 'list-open':
         requests = network.list_open_requests(worker_public_key=command.worker_public_key or None)
         print(json.dumps(requests, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'request-candidates':
+        candidates = network.get_request_candidates(
+            worker_public_key=command.public_key,
+            limit=max(command.limit, 1),
+        )
+        print(json.dumps(candidates, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'settings-network-get':
+        settings = network.get_network_settings(command.public_key)
+        print(json.dumps(settings, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'settings-network-update':
+        settings = network.update_network_settings(
+            public_key=command.public_key,
+            max_jobs_per_day=command.max_jobs_per_day,
+            max_storage_gb_per_day=command.max_storage_gb_per_day,
+            max_upload_gb_per_day=command.max_upload_gb_per_day,
+            max_download_gb_per_day=command.max_download_gb_per_day,
+            daily_upload_speed_mbps=command.daily_upload_speed_mbps,
+            daily_download_speed_mbps=command.daily_download_speed_mbps,
+        )
+        print(json.dumps(settings, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'settings-rules-get':
+        rules = network.get_serving_rules(command.public_key)
+        print(json.dumps(rules, indent=2, sort_keys=True))
+        return
+
+    if command.action == 'settings-rules-update':
+        followed_public_keys = command.followed_public_key if command.followed_public_key else None
+        site_blacklist = command.site_blacklist_host if command.site_blacklist_host else None
+        rules = network.update_serving_rules(
+            public_key=command.public_key,
+            block_porn_links=None if command.block_porn_links is None else command.block_porn_links == 'true',
+            min_ratio_to_serve=command.min_ratio_to_serve,
+            prioritize_high_ratio_first=None if command.prioritize_high_ratio_first is None else command.prioritize_high_ratio_first == 'true',
+            prioritize_followed_first=None if command.prioritize_followed_first is None else command.prioritize_followed_first == 'true',
+            followed_public_keys=followed_public_keys,
+            site_blacklist=site_blacklist,
+            rules_md=command.rules_md,
+        )
+        print(json.dumps(rules, indent=2, sort_keys=True))
         return
 
     if command.action == 'claim':

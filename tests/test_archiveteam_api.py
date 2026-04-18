@@ -501,3 +501,152 @@ def test_archiveteam_api_request_options_and_media_profiles(tmp_path, monkeypatc
         HTTP_X_AT_SESSION=session,
     )
     assert blocked_drm.status_code == 400
+
+
+def test_archiveteam_api_network_settings_rules_and_candidates(tmp_path, monkeypatch):
+    out_dir = tmp_path / "api-network-rules-data"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    state_file = out_dir / "archiveteam_state.json"
+    monkeypatch.setenv("ARCHIVETEAM_STATE_FILE", str(state_file))
+    monkeypatch.setenv("DATA_DIR", str(out_dir))
+    setup_django(check_db=False, in_memory_db=False)
+    client = Client(HTTP_HOST="api.archivebox.localhost:8000")
+
+    requester_payload = _json(
+        _post_json(client, "/api/archiveteam/register", {"username": "requester", "country": "US", "is_worker": True})
+    )
+    worker_payload = _json(
+        _post_json(client, "/api/archiveteam/register", {"username": "worker", "country": "US", "is_worker": True})
+    )
+
+    from archivebox.archiveteam import ArchiveTeamNode, ArchiveTeamNetwork
+
+    temp_network = ArchiveTeamNetwork(storage_path=str(state_file))
+    requester_node = ArchiveTeamNode(
+        network=temp_network,
+        private_key=requester_payload["keys"]["private_key"],
+        public_key=requester_payload["keys"]["public_key"],
+    )
+    worker_node = ArchiveTeamNode(
+        network=temp_network,
+        private_key=worker_payload["keys"]["private_key"],
+        public_key=worker_payload["keys"]["public_key"],
+    )
+
+    def login(display_public_key, node):
+        challenge = _json(_post_json(client, "/api/archiveteam/login/challenge", {"public_key": display_public_key}))["challenge"]
+        signature = node.sign_login_challenge(challenge)
+        login_resp = _post_json(client, "/api/archiveteam/login/complete", {"public_key": display_public_key, "signature": signature})
+        assert login_resp.status_code == 200
+        return _json(login_resp)["session_token"]
+
+    requester_session = login(requester_payload["user"]["display_public_key"], requester_node)
+    worker_session = login(worker_payload["user"]["display_public_key"], worker_node)
+
+    # Mark nodes online so claims can succeed.
+    assert _post_json(
+        client,
+        "/api/archiveteam/heartbeat",
+        {"country_code": "US"},
+        HTTP_X_AT_SESSION=requester_session,
+    ).status_code == 200
+    assert _post_json(
+        client,
+        "/api/archiveteam/heartbeat",
+        {"country_code": "US"},
+        HTTP_X_AT_SESSION=worker_session,
+    ).status_code == 200
+
+    # Worker configures job/storage/day and serving rules.
+    network_update = _post_json(
+        client,
+        "/api/archiveteam/settings/network",
+        {
+            "max_jobs_per_day": 1,
+            "max_storage_gb_per_day": 1.25,
+            "max_upload_gb_per_day": 1.5,
+            "max_download_gb_per_day": 2.0,
+            "daily_upload_speed_mbps": 12,
+            "daily_download_speed_mbps": 25,
+        },
+        HTTP_X_AT_SESSION=worker_session,
+    )
+    assert network_update.status_code == 200
+    assert _json(network_update)["max_jobs_per_day"] == 1
+
+    rules_update = _post_json(
+        client,
+        "/api/archiveteam/settings/serving-rules",
+        {
+            "block_porn_links": True,
+            "min_ratio_to_serve": 1.0,
+            "prioritize_high_ratio_first": False,
+            "prioritize_followed_first": True,
+            "followed_public_keys": [requester_payload["user"]["display_public_key"]],
+            "site_blacklist": ["blocked.example"],
+            "rules_md": "deny: forbidden.example",
+        },
+        HTTP_X_AT_SESSION=worker_session,
+    )
+    assert rules_update.status_code == 200
+    assert _json(rules_update)["block_porn_links"] is True
+
+    network_get = client.get("/api/archiveteam/settings/network", HTTP_X_AT_SESSION=worker_session)
+    assert network_get.status_code == 200
+    assert _json(network_get)["daily_download_speed_mbps"] == 25
+
+    rules_get = client.get("/api/archiveteam/settings/serving-rules", HTTP_X_AT_SESSION=worker_session)
+    assert rules_get.status_code == 200
+    rules_payload = _json(rules_get)
+    assert rules_payload["min_ratio_to_serve"] == 1.0
+    assert requester_payload["user"]["public_key"] in rules_payload["followed_public_keys"]
+
+    blocked_by_porn_policy = _post_json(
+        client,
+        "/api/archiveteam/requests",
+        {"url": "https://example.com/porn-feed", "archive_mode": "FULL_WARC"},
+        HTTP_X_AT_SESSION=requester_session,
+    )
+    assert blocked_by_porn_policy.status_code == 400
+
+    valid_request = _post_json(
+        client,
+        "/api/archiveteam/requests",
+        {"url": "https://example.com/clean", "archive_mode": "FULL_WARC"},
+        HTTP_X_AT_SESSION=requester_session,
+    )
+    assert valid_request.status_code == 201
+    request_id = _json(valid_request)["request_id"]
+
+    # Candidate list should include this request before claiming.
+    candidates = client.get("/api/archiveteam/requests/candidates?limit=5", HTTP_X_AT_SESSION=worker_session)
+    assert candidates.status_code == 200
+    candidate_rows = _json(candidates)
+    assert len(candidate_rows) == 1
+    assert candidate_rows[0]["request_id"] == request_id
+
+    claimed = _post_json(
+        client,
+        "/api/archiveteam/requests/claim",
+        {"request_id": request_id},
+        HTTP_X_AT_SESSION=worker_session,
+    )
+    assert claimed.status_code == 200
+
+    # max_jobs_per_day=1 should prevent claiming another request today.
+    second_request = _post_json(
+        client,
+        "/api/archiveteam/requests",
+        {"url": "https://example.com/second-clean", "archive_mode": "FULL_WARC"},
+        HTTP_X_AT_SESSION=requester_session,
+    )
+    assert second_request.status_code == 201
+    claim_again = _post_json(
+        client,
+        "/api/archiveteam/requests/claim",
+        {"request_id": _json(second_request)["request_id"]},
+        HTTP_X_AT_SESSION=worker_session,
+    )
+    assert claim_again.status_code == 400
+    assert "daily capacity reached" in _json(claim_again)["error"].lower()

@@ -113,14 +113,56 @@ class ArchiveTeamAPIView(View):
                         "archive_modes": network.list_archive_modes(),
                         "download_profiles": network.list_download_profiles(),
                         "default_worker_controls": network.default_worker_controls(),
+                        "default_network_settings": network.default_network_settings(),
+                        "default_serving_rules": network.default_serving_rules(),
                     }
                 )
+
+            if method == "GET" and endpoint == "settings/network":
+                session_key = self._require_session(network, request)
+                return self._ok(network.get_network_settings(session_key))
+
+            if method == "POST" and endpoint == "settings/network":
+                session_key = self._require_session(network, request)
+                updated = network.update_network_settings(
+                    public_key=session_key,
+                    max_jobs_per_day=body.get("max_jobs_per_day"),
+                    max_storage_gb_per_day=body.get("max_storage_gb_per_day"),
+                    max_upload_gb_per_day=body.get("max_upload_gb_per_day"),
+                    max_download_gb_per_day=body.get("max_download_gb_per_day"),
+                    daily_upload_speed_mbps=body.get("daily_upload_speed_mbps"),
+                    daily_download_speed_mbps=body.get("daily_download_speed_mbps"),
+                )
+                return self._ok(updated)
+
+            if method == "GET" and endpoint == "settings/serving-rules":
+                session_key = self._require_session(network, request)
+                return self._ok(network.get_serving_rules(session_key))
+
+            if method == "POST" and endpoint == "settings/serving-rules":
+                session_key = self._require_session(network, request)
+                updated = network.update_serving_rules(
+                    public_key=session_key,
+                    block_porn_links=body.get("block_porn_links"),
+                    min_ratio_to_serve=body.get("min_ratio_to_serve"),
+                    prioritize_high_ratio_first=body.get("prioritize_high_ratio_first"),
+                    prioritize_followed_first=body.get("prioritize_followed_first"),
+                    followed_public_keys=body.get("followed_public_keys"),
+                    site_blacklist=body.get("site_blacklist"),
+                    rules_md=body.get("rules_md"),
+                )
+                return self._ok(updated)
 
             if method == "GET" and endpoint == "requests/open":
                 session_key = self._optional_session(network, request)
                 worker_public_key = request.GET.get("worker_public_key") or session_key
                 requests = network.list_open_requests(worker_public_key=worker_public_key or None)
                 return self._ok(requests)
+
+            if method == "GET" and endpoint == "requests/candidates":
+                session_key = self._require_session(network, request)
+                limit = int(request.GET.get("limit", "20"))
+                return self._ok(network.get_request_candidates(worker_public_key=session_key, limit=max(limit, 1)))
 
             if method == "POST" and endpoint == "requests/claim":
                 session_key = self._require_session(network, request)

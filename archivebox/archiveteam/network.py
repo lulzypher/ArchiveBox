@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from urllib.parse import unquote, urlparse
+import re
+from urllib.parse import parse_qs, unquote, urlparse
 
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -46,6 +47,17 @@ class ArchiveTeamNetwork:
         "minor-sex",
     )
     DEFAULT_BLOCKED_HOSTS = ()
+    DEFAULT_PORN_KEYWORDS = (
+        "porn",
+        "xxx",
+        "adult",
+        "nsfw",
+        "sexcam",
+        "redtube",
+        "xvideos",
+        "pornhub",
+        "onlyfans",
+    )
     DEFAULT_RESTRICTED_DRM_HOSTS = (
         "netflix.com",
         "primevideo.com",
@@ -68,6 +80,24 @@ class ArchiveTeamNetwork:
         "sleep_interval_seconds": 0,
         "max_concurrent_downloads": 2,
     }
+    DEFAULT_NETWORK_SETTINGS = {
+        "max_jobs_per_day": 0,
+        "max_storage_gb_per_day": 0.0,
+        "max_upload_gb_per_day": 0.0,
+        "max_download_gb_per_day": 0.0,
+        "daily_upload_speed_mbps": 0,
+        "daily_download_speed_mbps": 0,
+    }
+    DEFAULT_SERVING_RULES = {
+        "block_porn_links": False,
+        "min_ratio_to_serve": 0.0,
+        "prioritize_high_ratio_first": True,
+        "prioritize_followed_first": False,
+        "followed_public_keys": [],
+        "site_blacklist": [],
+        "rules_md": "",
+    }
+    MAX_VOTE_WEIGHT = 20.0
     DOWNLOAD_PROFILES = {
         "balanced": {
             "allowed_modes": [
@@ -257,6 +287,18 @@ class ArchiveTeamNetwork:
                 "files_served": 0,
                 "files_requested": 0,
                 "archives_pinned": 0,
+                "served_bytes_total": 0,
+                "downloaded_bytes_total": 0,
+                "stored_bytes_total": 0,
+            },
+            "network_settings": self._clone(self.DEFAULT_NETWORK_SETTINGS),
+            "serving_rules": self._clone(self.DEFAULT_SERVING_RULES),
+            "daily_usage": {
+                "date": self._now().date().isoformat(),
+                "jobs_claimed": 0,
+                "storage_bytes_added": 0,
+                "upload_bytes_served": 0,
+                "download_bytes_received": 0,
             },
             "created_at": self._now().isoformat(),
         }
@@ -283,6 +325,95 @@ class ArchiveTeamNetwork:
         }
         self._save()
         return self._clone(user["profile"])
+
+    def get_network_settings(self, public_key: str) -> Dict[str, Any]:
+        canonical_key = self.normalize_public_key(public_key)
+        user = self._require_user(canonical_key)
+        settings = self._normalize_network_settings(user.get("network_settings", {}))
+        user["network_settings"] = self._clone(settings)
+        self._save()
+        return self._clone(settings)
+
+    def update_network_settings(
+        self,
+        public_key: str,
+        max_jobs_per_day: Optional[int] = None,
+        max_storage_gb_per_day: Optional[float] = None,
+        max_upload_gb_per_day: Optional[float] = None,
+        max_download_gb_per_day: Optional[float] = None,
+        daily_upload_speed_mbps: Optional[int] = None,
+        daily_download_speed_mbps: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        canonical_key = self.normalize_public_key(public_key)
+        user = self._require_user(canonical_key)
+        settings = self._clone(user.get("network_settings", self.DEFAULT_NETWORK_SETTINGS))
+
+        if max_jobs_per_day is not None:
+            settings["max_jobs_per_day"] = self._parse_int(max_jobs_per_day, "network_settings.max_jobs_per_day")
+        if max_storage_gb_per_day is not None:
+            settings["max_storage_gb_per_day"] = self._parse_float(max_storage_gb_per_day, "network_settings.max_storage_gb_per_day")
+        if max_upload_gb_per_day is not None:
+            settings["max_upload_gb_per_day"] = self._parse_float(max_upload_gb_per_day, "network_settings.max_upload_gb_per_day")
+        if max_download_gb_per_day is not None:
+            settings["max_download_gb_per_day"] = self._parse_float(max_download_gb_per_day, "network_settings.max_download_gb_per_day")
+        if daily_upload_speed_mbps is not None:
+            settings["daily_upload_speed_mbps"] = self._parse_int(daily_upload_speed_mbps, "network_settings.daily_upload_speed_mbps")
+        if daily_download_speed_mbps is not None:
+            settings["daily_download_speed_mbps"] = self._parse_int(daily_download_speed_mbps, "network_settings.daily_download_speed_mbps")
+
+        normalized = self._normalize_network_settings(settings)
+        user["network_settings"] = normalized
+        self._save()
+        return self._clone(normalized)
+
+    def get_serving_rules(self, public_key: str) -> Dict[str, Any]:
+        canonical_key = self.normalize_public_key(public_key)
+        user = self._require_user(canonical_key)
+        rules = self._normalize_serving_rules(user.get("serving_rules", {}))
+        user["serving_rules"] = self._clone(rules)
+        self._save()
+        return self._clone(rules)
+
+    def update_serving_rules(
+        self,
+        public_key: str,
+        block_porn_links: Optional[bool] = None,
+        min_ratio_to_serve: Optional[float] = None,
+        prioritize_high_ratio_first: Optional[bool] = None,
+        prioritize_followed_first: Optional[bool] = None,
+        followed_public_keys: Optional[List[str]] = None,
+        site_blacklist: Optional[List[str]] = None,
+        rules_md: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        canonical_key = self.normalize_public_key(public_key)
+        user = self._require_user(canonical_key)
+        rules = self._clone(user.get("serving_rules", self.DEFAULT_SERVING_RULES))
+
+        if block_porn_links is not None:
+            rules["block_porn_links"] = self._parse_bool(block_porn_links, "serving_rules.block_porn_links")
+        if min_ratio_to_serve is not None:
+            rules["min_ratio_to_serve"] = self._parse_float(min_ratio_to_serve, "serving_rules.min_ratio_to_serve")
+        if prioritize_high_ratio_first is not None:
+            rules["prioritize_high_ratio_first"] = self._parse_bool(
+                prioritize_high_ratio_first,
+                "serving_rules.prioritize_high_ratio_first",
+            )
+        if prioritize_followed_first is not None:
+            rules["prioritize_followed_first"] = self._parse_bool(
+                prioritize_followed_first,
+                "serving_rules.prioritize_followed_first",
+            )
+        if followed_public_keys is not None:
+            rules["followed_public_keys"] = followed_public_keys
+        if site_blacklist is not None:
+            rules["site_blacklist"] = site_blacklist
+        if rules_md is not None:
+            rules["rules_md"] = str(rules_md)
+
+        normalized = self._normalize_serving_rules(rules)
+        user["serving_rules"] = normalized
+        self._save()
+        return self._clone(normalized)
 
     def issue_login_challenge(self, public_key: str) -> str:
         canonical_key = self.normalize_public_key(public_key)
@@ -365,11 +496,13 @@ class ArchiveTeamNetwork:
     ) -> Dict[str, Any]:
         requester_key = self.normalize_public_key(requester_public_key)
         requester = self._require_user(requester_key)
+        requester["serving_rules"] = self._normalize_serving_rules(requester.get("serving_rules", {}))
+        self._reset_daily_usage_if_needed(requester)
         if not requester["is_worker"]:
             raise ArchiveTeamError("Only worker accounts can submit requests.")
         if not url.startswith(("http://", "https://")):
             raise ArchiveTeamError("URL must start with http:// or https://")
-        self._assert_url_allowed(url)
+        self._assert_url_allowed(url, rules=requester["serving_rules"])
 
         mode = ArchiveMode(archive_mode)
         normalized_profile = self._normalize_download_profile(mode, download_profile)
@@ -403,11 +536,46 @@ class ArchiveTeamNetwork:
         self._save()
         return self._clone(request_record)
 
+    def get_request_candidates(
+        self,
+        worker_public_key: str,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        worker_key = self.normalize_public_key(worker_public_key)
+        worker = self._require_user(worker_key)
+        worker["serving_rules"] = self._normalize_serving_rules(worker.get("serving_rules", {}))
+        worker["network_settings"] = self._normalize_network_settings(worker.get("network_settings", {}))
+        self._reset_daily_usage_if_needed(worker)
+
+        candidates: List[Dict[str, Any]] = []
+        for record in self.list_open_requests(worker_public_key=worker_key):
+            allowed, reason = self._request_allowed_by_rules(worker_key, record, worker["serving_rules"])
+            if not allowed:
+                continue
+            ok, cap_reason = self._worker_has_capacity_for_request(worker, record)
+            if not ok:
+                continue
+            candidate = self._clone(record)
+            requester_ratio, _ = self.get_ratio(candidate["requester_public_key"])
+            candidate["requester_ratio"] = round(requester_ratio, 3)
+            candidate["rule_reason"] = reason
+            candidate["capacity_reason"] = cap_reason
+            candidates.append(candidate)
+            if len(candidates) >= max(limit, 1):
+                break
+        return candidates
+
     def list_open_requests(self, worker_public_key: Optional[str] = None) -> List[Dict[str, Any]]:
         worker_country = None
+        worker_key = ""
+        worker_rules = self._clone(self.DEFAULT_SERVING_RULES)
         if worker_public_key:
-            worker = self._require_user(self.normalize_public_key(worker_public_key))
+            worker_key = self.normalize_public_key(worker_public_key)
+            worker = self._require_user(worker_key)
+            worker["serving_rules"] = self._normalize_serving_rules(worker.get("serving_rules", {}))
+            self._reset_daily_usage_if_needed(worker)
             worker_country = worker["country_code"]
+            worker_rules = worker["serving_rules"]
 
         results: List[Dict[str, Any]] = []
         for record in self.requests.values():
@@ -415,8 +583,24 @@ class ArchiveTeamNetwork:
                 continue
             if worker_country and record["country_preference"] and record["country_preference"] != worker_country:
                 continue
+            if worker_key:
+                allowed, _ = self._request_allowed_by_rules(worker_key, record, worker_rules)
+                if not allowed:
+                    continue
             results.append(self._clone(record))
-        results.sort(key=lambda req: req["created_at"])
+        if worker_key:
+            followed = set(worker_rules.get("followed_public_keys", []))
+
+            def _worker_priority(req: Dict[str, Any]) -> Tuple[int, float, str]:
+                requester = req["requester_public_key"]
+                requester_ratio, _ = self.get_ratio(requester)
+                follow_rank = 0 if worker_rules.get("prioritize_followed_first", False) and requester in followed else 1
+                ratio_rank = -requester_ratio if worker_rules.get("prioritize_high_ratio_first", True) else 0.0
+                return (follow_rank, ratio_rank, req["created_at"])
+
+            results.sort(key=_worker_priority)
+        else:
+            results.sort(key=lambda req: req["created_at"])
         return results
 
     def poll_next_request(self, worker_public_key: str) -> Optional[Dict[str, Any]]:
@@ -426,6 +610,9 @@ class ArchiveTeamNetwork:
     def claim_request(self, worker_public_key: str, request_id: str) -> Dict[str, Any]:
         worker_key = self.normalize_public_key(worker_public_key)
         worker = self._require_user(worker_key)
+        worker["serving_rules"] = self._normalize_serving_rules(worker.get("serving_rules", {}))
+        worker["network_settings"] = self._normalize_network_settings(worker.get("network_settings", {}))
+        self._reset_daily_usage_if_needed(worker)
         request_record = self._require_request(request_id)
 
         if not self.is_node_online(worker_key):
@@ -434,9 +621,16 @@ class ArchiveTeamNetwork:
             raise ArchiveTeamError("Request is not open for claiming.")
         if request_record["country_preference"] and request_record["country_preference"] != worker["country_code"]:
             raise ArchiveTeamError("Worker country does not match request preference.")
+        allowed, reason = self._request_allowed_by_rules(worker_key, request_record, worker["serving_rules"])
+        if not allowed:
+            raise ArchiveTeamError(f"Request blocked by worker rules: {reason}.")
+        capacity_ok, capacity_reason = self._worker_has_capacity_for_request(worker, request_record)
+        if not capacity_ok:
+            raise ArchiveTeamError(f"Worker daily capacity reached: {capacity_reason}.")
 
         request_record["status"] = "CLAIMED"
         request_record["claimed_by"] = worker_key
+        self._increment_worker_capacity_usage(worker, request_record, claim_job=True)
         self._save()
         return self._clone(request_record)
 
@@ -449,6 +643,8 @@ class ArchiveTeamNetwork:
     ) -> Dict[str, Any]:
         worker_key = self.normalize_public_key(worker_public_key)
         worker = self._require_user(worker_key)
+        worker["network_settings"] = self._normalize_network_settings(worker.get("network_settings", {}))
+        self._reset_daily_usage_if_needed(worker)
         request_record = self._require_request(request_id)
 
         if request_record["status"] != "CLAIMED":
@@ -457,6 +653,18 @@ class ArchiveTeamNetwork:
             raise ArchiveTeamError("Only claiming worker can fulfill the request.")
         if not content_hash.strip():
             raise ArchiveTeamError("Content hash is required.")
+
+        estimated_size_bytes = self._extract_bytes_from_storage_uri(storage_uri)
+        if estimated_size_bytes <= 0:
+            estimated_size_bytes = self._estimate_request_size_bytes(request_record)
+        capacity_ok, capacity_reason = self._worker_has_capacity_for_request(
+            worker,
+            request_record,
+            extra_storage_bytes=estimated_size_bytes,
+            check_jobs=False,
+        )
+        if not capacity_ok:
+            raise ArchiveTeamError(f"Worker daily capacity reached: {capacity_reason}.")
 
         now = self._now()
         pinned_until = now + self.pin_window
@@ -473,6 +681,7 @@ class ArchiveTeamNetwork:
             "policy_flags": self._clone(request_record.get("policy_flags", [])),
             "content_hash": content_hash.lower(),
             "storage_uri": storage_uri.strip(),
+            "estimated_size_bytes": int(estimated_size_bytes),
             "pinned_until": pinned_until.isoformat(),
             "created_at": now.isoformat(),
             "hosts": [
@@ -493,6 +702,13 @@ class ArchiveTeamNetwork:
 
         worker["stats"]["requests_processed"] += 1
         worker["stats"]["archives_pinned"] += 1
+        worker["stats"]["stored_bytes_total"] += int(estimated_size_bytes)
+        self._increment_worker_capacity_usage(
+            worker,
+            request_record,
+            claim_job=False,
+            storage_bytes=int(estimated_size_bytes),
+        )
 
         ledger_entry = self._append_ledger_entry(
             {
@@ -790,6 +1006,9 @@ class ArchiveTeamNetwork:
             "yes_count": 0,
             "no_count": 0,
             "abstain_count": 0,
+            "weighted_yes": 0.0,
+            "weighted_no": 0.0,
+            "weighted_abstain": 0.0,
             "finalized_at": "",
             "finalized_by": "",
             "result": "",
@@ -875,8 +1094,8 @@ class ArchiveTeamNetwork:
 
         self._recount_proposal_votes(proposal)
         total_votes = proposal["yes_count"] + proposal["no_count"] + proposal["abstain_count"]
-        decisive_votes = proposal["yes_count"] + proposal["no_count"]
-        yes_ratio = (proposal["yes_count"] / decisive_votes) if decisive_votes else 0.0
+        decisive_votes = proposal["weighted_yes"] + proposal["weighted_no"]
+        yes_ratio = (proposal["weighted_yes"] / decisive_votes) if decisive_votes else 0.0
 
         if total_votes < proposal["quorum"]:
             result = "REJECTED"
@@ -903,6 +1122,9 @@ class ArchiveTeamNetwork:
                 "yes_count": proposal["yes_count"],
                 "no_count": proposal["no_count"],
                 "abstain_count": proposal["abstain_count"],
+                "weighted_yes": proposal["weighted_yes"],
+                "weighted_no": proposal["weighted_no"],
+                "weighted_abstain": proposal["weighted_abstain"],
                 "finalized_by": actor_key,
             }
         )
@@ -1064,15 +1286,56 @@ class ArchiveTeamNetwork:
         requester_key = self.normalize_public_key(requester_public_key)
         server = self._require_user(server_key)
         requester = self._require_user(requester_key)
+        server["serving_rules"] = self._normalize_serving_rules(server.get("serving_rules", {}))
+        server["network_settings"] = self._normalize_network_settings(server.get("network_settings", {}))
+        requester["network_settings"] = self._normalize_network_settings(requester.get("network_settings", {}))
+        self._reset_daily_usage_if_needed(server)
+        self._reset_daily_usage_if_needed(requester)
         archive = self._require_archive(archive_id)
 
         serving_hosts = {host["public_key"] for host in self._active_hosts(archive)}
         if server_key not in serving_hosts:
             raise ArchiveTeamError("Server is not currently available for this archive.")
+        requester_ratio, _ = self.get_ratio(requester_key)
+        min_ratio = float(server["serving_rules"].get("min_ratio_to_serve", 0.0))
+        if requester_ratio < min_ratio:
+            raise ArchiveTeamError("Requester ratio is below server minimum serving requirement.")
+        url_allowed, url_reason = self._request_allowed_by_rules(
+            worker_public_key=server_key,
+            request_record={"url": archive["source_url"], "requester_public_key": requester_key},
+            rules=server["serving_rules"],
+        )
+        if not url_allowed:
+            raise ArchiveTeamError(f"Archive blocked by server rules: {url_reason}.")
+
+        transfer_bytes = int(archive.get("estimated_size_bytes") or self._estimate_request_size_bytes(archive))
+        upload_cap = float(server["network_settings"].get("max_upload_gb_per_day", 0.0))
+        download_cap = float(requester["network_settings"].get("max_download_gb_per_day", 0.0))
+        upload_speed_limit = int(server["network_settings"].get("daily_upload_speed_mbps", 0))
+        download_speed_limit = int(requester["network_settings"].get("daily_download_speed_mbps", 0))
+        server_usage = self._ensure_daily_usage(server)
+        requester_usage = self._ensure_daily_usage(requester)
+        if upload_cap > 0 and server_usage["upload_bytes_served"] + transfer_bytes > int(upload_cap * 1024 ** 3):
+            raise ArchiveTeamError("Server daily upload cap reached.")
+        if download_cap > 0 and requester_usage["download_bytes_received"] + transfer_bytes > int(download_cap * 1024 ** 3):
+            raise ArchiveTeamError("Requester daily download cap reached.")
+        # Speed limits are applied as an approximate max transferable bytes/day.
+        if upload_speed_limit > 0:
+            upload_limit_bytes = self._daily_bytes_from_mbps(upload_speed_limit)
+            if server_usage["upload_bytes_served"] + transfer_bytes > upload_limit_bytes:
+                raise ArchiveTeamError("Server daily upload speed-derived cap reached.")
+        if download_speed_limit > 0:
+            download_limit_bytes = self._daily_bytes_from_mbps(download_speed_limit)
+            if requester_usage["download_bytes_received"] + transfer_bytes > download_limit_bytes:
+                raise ArchiveTeamError("Requester daily download speed-derived cap reached.")
 
         server["stats"]["files_served"] += 1
+        server["stats"]["served_bytes_total"] += transfer_bytes
         requester["stats"]["files_requested"] += 1
+        requester["stats"]["downloaded_bytes_total"] += transfer_bytes
         archive["serve_count"] += 1
+        server_usage["upload_bytes_served"] += transfer_bytes
+        requester_usage["download_bytes_received"] += transfer_bytes
 
         self._append_ledger_entry(
             {
@@ -1080,6 +1343,7 @@ class ArchiveTeamNetwork:
                 "archive_id": archive_id,
                 "server_public_key": server_key,
                 "requester_public_key": requester_key,
+                "transfer_bytes": transfer_bytes,
                 "served_at": self._now().isoformat(),
             }
         )
@@ -1127,6 +1391,7 @@ class ArchiveTeamNetwork:
         ratio, band = self.get_ratio(canonical_key)
         user["ratio_score"] = round(ratio, 3)
         user["ratio_band"] = band.value
+        user["voting_power"] = round(self._vote_weight_for_user(canonical_key), 3)
         user["online"] = self.is_node_online(canonical_key)
         return user
 
@@ -1141,6 +1406,14 @@ class ArchiveTeamNetwork:
     @classmethod
     def default_worker_controls(cls) -> Dict[str, int]:
         return cls._clone(cls.DEFAULT_WORKER_CONTROLS)
+
+    @classmethod
+    def default_network_settings(cls) -> Dict[str, Any]:
+        return cls._clone(cls.DEFAULT_NETWORK_SETTINGS)
+
+    @classmethod
+    def default_serving_rules(cls) -> Dict[str, Any]:
+        return cls._clone(cls.DEFAULT_SERVING_RULES)
 
     # -------------------------------------------------------------------------
     # Persistence helpers
@@ -1180,6 +1453,10 @@ class ArchiveTeamNetwork:
         self.online_nodes = raw.get("online_nodes", {})
         self.login_challenges = raw.get("login_challenges", {})
         self.sessions = raw.get("sessions", {})
+        for user in self.users.values():
+            user["network_settings"] = self._normalize_network_settings(user.get("network_settings", {}))
+            user["serving_rules"] = self._normalize_serving_rules(user.get("serving_rules", {}))
+            self._reset_daily_usage_if_needed(user)
         for request_record in self.requests.values():
             self._hydrate_request_defaults(request_record)
         for archive_record in self.archives.values():
@@ -1301,17 +1578,28 @@ class ArchiveTeamNetwork:
         yes_count = 0
         no_count = 0
         abstain_count = 0
-        for vote_row in proposal["votes"].values():
+        weighted_yes = 0.0
+        weighted_no = 0.0
+        weighted_abstain = 0.0
+        for voter_key, vote_row in proposal["votes"].items():
             vote = vote_row["vote"]
+            vote_weight = self._vote_weight_for_user(voter_key)
+            vote_row["vote_weight"] = round(vote_weight, 3)
             if vote == "YES":
                 yes_count += 1
+                weighted_yes += vote_weight
             elif vote == "NO":
                 no_count += 1
+                weighted_no += vote_weight
             elif vote == "ABSTAIN":
                 abstain_count += 1
+                weighted_abstain += vote_weight
         proposal["yes_count"] = yes_count
         proposal["no_count"] = no_count
         proposal["abstain_count"] = abstain_count
+        proposal["weighted_yes"] = round(weighted_yes, 3)
+        proposal["weighted_no"] = round(weighted_no, 3)
+        proposal["weighted_abstain"] = round(weighted_abstain, 3)
         proposal["updated_at"] = self._now().isoformat()
 
     def _validate_collection_fields(self, name: str, description: str) -> None:
@@ -1330,7 +1618,7 @@ class ArchiveTeamNetwork:
         if collection["is_private"] and collection["owner_public_key"] != viewer_public_key:
             raise ArchiveTeamError("Collection is private.")
 
-    def _assert_url_allowed(self, url: str) -> None:
+    def _assert_url_allowed(self, url: str, rules: Optional[Dict[str, Any]] = None) -> None:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
         decoded_url = unquote(url).lower()
@@ -1343,6 +1631,19 @@ class ArchiveTeamNetwork:
         for term in self.blocked_url_terms:
             if term in decoded_url:
                 raise ArchiveTeamError("URL blocked by safety policy.")
+
+        if rules:
+            normalized_rules = self._normalize_serving_rules(rules)
+            for blocked_host in normalized_rules.get("site_blacklist", []):
+                if host and self._host_matches(host, blocked_host):
+                    raise ArchiveTeamError("URL host is blocked by user site blacklist.")
+            if normalized_rules.get("block_porn_links", False):
+                for keyword in self.DEFAULT_PORN_KEYWORDS:
+                    if keyword in decoded_url:
+                        raise ArchiveTeamError("URL blocked by user porn policy.")
+            md_allowed, md_reason = self._apply_rules_md_hints(normalized_rules.get("rules_md", ""), url=url, host=host)
+            if not md_allowed:
+                raise ArchiveTeamError(f"URL blocked by user Rules.MD policy: {md_reason}.")
 
     def _build_policy_flags(self, url: str) -> List[str]:
         parsed = urlparse(url)
@@ -1535,3 +1836,225 @@ class ArchiveTeamNetwork:
         if cid_value.startswith("bafy") and len(cid_value) >= 20:
             return
         raise ArchiveTeamError("Invalid IPFS CID format.")
+
+    def _normalize_network_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(settings, dict):
+            settings = {}
+        normalized = self._clone(self.DEFAULT_NETWORK_SETTINGS)
+        normalized.update(settings)
+        normalized["max_jobs_per_day"] = self._parse_int(normalized.get("max_jobs_per_day", 0), "network_settings.max_jobs_per_day")
+        normalized["max_storage_gb_per_day"] = self._parse_float(
+            normalized.get("max_storage_gb_per_day", 0.0),
+            "network_settings.max_storage_gb_per_day",
+        )
+        normalized["max_upload_gb_per_day"] = self._parse_float(
+            normalized.get("max_upload_gb_per_day", 0.0),
+            "network_settings.max_upload_gb_per_day",
+        )
+        normalized["max_download_gb_per_day"] = self._parse_float(
+            normalized.get("max_download_gb_per_day", 0.0),
+            "network_settings.max_download_gb_per_day",
+        )
+        normalized["daily_upload_speed_mbps"] = self._parse_int(
+            normalized.get("daily_upload_speed_mbps", 0),
+            "network_settings.daily_upload_speed_mbps",
+        )
+        normalized["daily_download_speed_mbps"] = self._parse_int(
+            normalized.get("daily_download_speed_mbps", 0),
+            "network_settings.daily_download_speed_mbps",
+        )
+        for key in ("max_jobs_per_day", "daily_upload_speed_mbps", "daily_download_speed_mbps"):
+            if normalized[key] < 0:
+                raise ArchiveTeamError(f"{key} must be 0 or greater.")
+        for key in ("max_storage_gb_per_day", "max_upload_gb_per_day", "max_download_gb_per_day"):
+            if normalized[key] < 0:
+                raise ArchiveTeamError(f"{key} must be 0 or greater.")
+        return normalized
+
+    def _normalize_serving_rules(self, rules: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(rules, dict):
+            rules = {}
+        normalized = self._clone(self.DEFAULT_SERVING_RULES)
+        normalized.update(rules)
+        normalized["block_porn_links"] = self._parse_bool(
+            normalized.get("block_porn_links", False),
+            "serving_rules.block_porn_links",
+        )
+        normalized["min_ratio_to_serve"] = self._parse_float(
+            normalized.get("min_ratio_to_serve", 0.0),
+            "serving_rules.min_ratio_to_serve",
+        )
+        if normalized["min_ratio_to_serve"] < 0:
+            raise ArchiveTeamError("serving_rules.min_ratio_to_serve must be 0 or greater.")
+        normalized["prioritize_high_ratio_first"] = self._parse_bool(
+            normalized.get("prioritize_high_ratio_first", True),
+            "serving_rules.prioritize_high_ratio_first",
+        )
+        normalized["prioritize_followed_first"] = self._parse_bool(
+            normalized.get("prioritize_followed_first", False),
+            "serving_rules.prioritize_followed_first",
+        )
+        followed_keys: List[str] = []
+        for key in normalized.get("followed_public_keys", []) or []:
+            followed_keys.append(self.normalize_public_key(str(key)))
+        normalized["followed_public_keys"] = sorted(set(followed_keys))
+        blacklist_hosts: List[str] = []
+        for host in normalized.get("site_blacklist", []) or []:
+            clean = str(host or "").strip().lower()
+            if clean:
+                blacklist_hosts.append(clean)
+        normalized["site_blacklist"] = sorted(set(blacklist_hosts))
+        normalized["rules_md"] = str(normalized.get("rules_md", "") or "")
+        return normalized
+
+    def _reset_daily_usage_if_needed(self, user: Dict[str, Any]) -> None:
+        today = self._now().date().isoformat()
+        usage = user.setdefault(
+            "daily_usage",
+            {"date": today, "jobs_claimed": 0, "storage_bytes_added": 0, "upload_bytes_served": 0, "download_bytes_received": 0},
+        )
+        if usage.get("date") != today:
+            usage["date"] = today
+            usage["jobs_claimed"] = 0
+            usage["storage_bytes_added"] = 0
+            usage["upload_bytes_served"] = 0
+            usage["download_bytes_received"] = 0
+
+    def _ensure_daily_usage(self, user: Dict[str, Any]) -> Dict[str, Any]:
+        self._reset_daily_usage_if_needed(user)
+        usage = user.setdefault("daily_usage", {})
+        usage.setdefault("jobs_claimed", 0)
+        usage.setdefault("storage_bytes_added", 0)
+        usage.setdefault("upload_bytes_served", 0)
+        usage.setdefault("download_bytes_received", 0)
+        return usage
+
+    def _request_allowed_by_rules(
+        self,
+        worker_public_key: str,
+        request_record: Dict[str, Any],
+        rules: Dict[str, Any],
+    ) -> Tuple[bool, str]:
+        url = str(request_record.get("url", "")).strip()
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        decoded = unquote(url).lower()
+
+        for blocked_host in rules.get("site_blacklist", []):
+            if host and self._host_matches(host, blocked_host):
+                return False, "site_blacklist"
+
+        if rules.get("block_porn_links", False):
+            for keyword in self.DEFAULT_PORN_KEYWORDS:
+                if keyword in decoded:
+                    return False, "porn_filtered"
+
+        requester_raw = str(request_record.get("requester_public_key", "") or "").strip()
+        requester_ratio = 0.0
+        if requester_raw:
+            requester_key = self.normalize_public_key(requester_raw)
+            requester_ratio, _ = self.get_ratio(requester_key)
+        if requester_ratio < float(rules.get("min_ratio_to_serve", 0.0)):
+            return False, "not_enough_ratio_to_serve"
+
+        rules_md = str(rules.get("rules_md", "") or "")
+        if rules_md:
+            md_allowed, md_reason = self._apply_rules_md_hints(rules_md, url=url, host=host)
+            if not md_allowed:
+                return False, md_reason
+
+        return True, ""
+
+    def _apply_rules_md_hints(self, rules_md: str, url: str, host: str) -> Tuple[bool, str]:
+        text = rules_md.lower()
+        if "do not archive porn" in text or "no porn" in text:
+            decoded = unquote(url).lower()
+            for keyword in self.DEFAULT_PORN_KEYWORDS:
+                if keyword in decoded:
+                    return False, "rules_md_porn_filtered"
+
+        blocked_hosts: List[str] = []
+        for line in rules_md.splitlines():
+            stripped = line.strip().lower()
+            if stripped.startswith(("block:", "blacklist:", "deny:")):
+                _, _, value = stripped.partition(":")
+                host_value = value.strip()
+                if host_value:
+                    blocked_hosts.append(host_value)
+
+        for blocked_host in blocked_hosts:
+            if host and self._host_matches(host, blocked_host):
+                return False, "rules_md_blocked_host"
+
+        return True, ""
+
+    def _worker_has_capacity_for_request(
+        self,
+        worker: Dict[str, Any],
+        request_record: Dict[str, Any],
+        extra_storage_bytes: int = 0,
+        check_jobs: bool = True,
+    ) -> Tuple[bool, str]:
+        settings = self._normalize_network_settings(worker.get("network_settings", {}))
+        usage = self._ensure_daily_usage(worker)
+        if check_jobs and settings["max_jobs_per_day"] > 0 and usage["jobs_claimed"] >= settings["max_jobs_per_day"]:
+            return False, "daily_job_limit_reached"
+        if settings["max_storage_gb_per_day"] > 0:
+            storage_cap = int(settings["max_storage_gb_per_day"] * 1024 ** 3)
+            if usage["storage_bytes_added"] + max(extra_storage_bytes, 0) > storage_cap:
+                return False, "daily_storage_gb_limit_reached"
+        return True, ""
+
+    def _increment_worker_capacity_usage(
+        self,
+        worker: Dict[str, Any],
+        request_record: Dict[str, Any],
+        claim_job: bool = True,
+        storage_bytes: int = 0,
+    ) -> None:
+        usage = self._ensure_daily_usage(worker)
+        if claim_job:
+            usage["jobs_claimed"] += 1
+        if storage_bytes > 0:
+            usage["storage_bytes_added"] += int(storage_bytes)
+
+    @staticmethod
+    def _extract_bytes_from_storage_uri(storage_uri: str) -> int:
+        parsed = urlparse(storage_uri or "")
+        query = parse_qs(parsed.query or "")
+        for key in ("size_bytes", "bytes", "size"):
+            value = query.get(key, [""])[0]
+            if not value:
+                continue
+            try:
+                return max(int(value), 0)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    def _estimate_request_size_bytes(self, request_record: Dict[str, Any]) -> int:
+        mode = str(request_record.get("archive_mode", ArchiveMode.FULL_WARC.value))
+        if mode == ArchiveMode.ZIP_WARC.value:
+            return 120 * 1024 * 1024
+        if mode == ArchiveMode.MEDIA_YTDLP.value:
+            return 800 * 1024 * 1024
+        if mode == ArchiveMode.GALLERY_DL.value:
+            return 250 * 1024 * 1024
+        return 300 * 1024 * 1024
+
+    def _vote_weight_for_user(self, public_key: str) -> float:
+        canonical_key = self.normalize_public_key(public_key)
+        ratio, _ = self.get_ratio(canonical_key)
+        return min(max(ratio, 0.1), self.MAX_VOTE_WEIGHT)
+
+    @staticmethod
+    def _parse_float(value: Any, field_name: str) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ArchiveTeamError(f"{field_name} must be a number.") from exc
+
+    @staticmethod
+    def _daily_bytes_from_mbps(mbps: int) -> int:
+        # Convert megabits/sec into approximate bytes/day.
+        return int((max(mbps, 0) * 1_000_000 / 8) * 86400)
