@@ -1,0 +1,40 @@
+<svg width="320" height="320" viewBox="0 0 320 320" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="logoTitle logoDesc">
+  <title id="logoTitle">Decentralized Archive Box logo</title>
+  <desc id="logoDesc">A layered archive box with a network node ring.</desc>
+  <defs>
+    <linearGradient id="bgGrad" x1="42" y1="32" x2="278" y2="288" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7ef9d6"/>
+      <stop offset="1" stop-color="#7ba8ff"/>
+    </linearGradient>
+    <linearGradient id="boxGrad" x1="98" y1="98" x2="222" y2="238" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f1b33"/>
+      <stop offset="1" stop-color="#1a2d57"/>
+    </linearGradient>
+    <filter id="softShadow" x="0" y="0" width="320" height="320" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#061021" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+
+  <circle cx="160" cy="160" r="136" fill="url(#bgGrad)" filter="url(#softShadow)"/>
+  <circle cx="160" cy="160" r="112" fill="#0B1327" fill-opacity="0.92"/>
+
+  <path d="M88 124L160 88L232 124L160 160L88 124Z" fill="#2A4A85"/>
+  <path d="M88 124V192L160 232V160L88 124Z" fill="#18315F"/>
+  <path d="M232 124V192L160 232V160L232 124Z" fill="url(#boxGrad)"/>
+
+  <path d="M114 138L160 114L206 138L160 162L114 138Z" fill="#7EF9D6" fill-opacity="0.22"/>
+
+  <circle cx="160" cy="58" r="9" fill="#7EF9D6"/>
+  <circle cx="246" cy="104" r="8" fill="#7BA8FF"/>
+  <circle cx="246" cy="216" r="8" fill="#7EF9D6"/>
+  <circle cx="160" cy="262" r="9" fill="#7BA8FF"/>
+  <circle cx="74" cy="216" r="8" fill="#7EF9D6"/>
+  <circle cx="74" cy="104" r="8" fill="#7BA8FF"/>
+
+  <path d="M160 67V88" stroke="#DDF2FF" stroke-opacity="0.85" stroke-width="4" stroke-linecap="round"/>
+  <path d="M238 108L225 116" stroke="#DDF2FF" stroke-opacity="0.85" stroke-width="4" stroke-linecap="round"/>
+  <path d="M238 212L225 204" stroke="#DDF2FF" stroke-opacity="0.85" stroke-width="4" stroke-linecap="round"/>
+  <path d="M160 253V232" stroke="#DDF2FF" stroke-opacity="0.85" stroke-width="4" stroke-linecap="round"/>
+  <path d="M82 212L95 204" stroke="#DDF2FF" stroke-opacity="0.85" stroke-width="4" stroke-linecap="round"/>
+  <path d="M82 108L95 116" stroke="#DDF2FF" stroke-opacity="0.85" stroke-width="4" stroke-linecap="round"/>
+</svg>

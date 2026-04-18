@@ -35,12 +35,61 @@ class ArchiveTeamNode:
         url: str,
         archive_mode: str,
         country_preference: str = "",
+        download_profile: str = "balanced",
+        profile_options: Optional[Dict[str, Any]] = None,
+        worker_controls: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return self.network.submit_request(
             requester_public_key=self.public_key,
             url=url,
             archive_mode=archive_mode,
             country_preference=country_preference,
+            download_profile=download_profile,
+            profile_options=profile_options,
+            worker_controls=worker_controls,
+        )
+
+    def get_request_candidates(self, limit: int = 20) -> Dict[str, Any]:
+        return {"candidates": self.network.get_request_candidates(self.public_key, limit=limit)}
+
+    def update_network_settings(
+        self,
+        max_jobs_per_day: Optional[int] = None,
+        max_storage_gb_per_day: Optional[float] = None,
+        max_upload_gb_per_day: Optional[float] = None,
+        max_download_gb_per_day: Optional[float] = None,
+        daily_upload_speed_mbps: Optional[int] = None,
+        daily_download_speed_mbps: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return self.network.update_network_settings(
+            public_key=self.public_key,
+            max_jobs_per_day=max_jobs_per_day,
+            max_storage_gb_per_day=max_storage_gb_per_day,
+            max_upload_gb_per_day=max_upload_gb_per_day,
+            max_download_gb_per_day=max_download_gb_per_day,
+            daily_upload_speed_mbps=daily_upload_speed_mbps,
+            daily_download_speed_mbps=daily_download_speed_mbps,
+        )
+
+    def update_serving_rules(
+        self,
+        block_porn_links: Optional[bool] = None,
+        min_ratio_to_serve: Optional[float] = None,
+        prioritize_high_ratio_first: Optional[bool] = None,
+        prioritize_followed_first: Optional[bool] = None,
+        followed_public_keys: Optional[list] = None,
+        site_blacklist: Optional[list] = None,
+        rules_md: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self.network.update_serving_rules(
+            public_key=self.public_key,
+            block_porn_links=block_porn_links,
+            min_ratio_to_serve=min_ratio_to_serve,
+            prioritize_high_ratio_first=prioritize_high_ratio_first,
+            prioritize_followed_first=prioritize_followed_first,
+            followed_public_keys=followed_public_keys,
+            site_blacklist=site_blacklist,
+            rules_md=rules_md,
         )
 
     def poll_and_claim(self) -> Optional[Dict[str, Any]]:

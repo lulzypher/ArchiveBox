@@ -83,6 +83,13 @@ a {
     font-size: 0.95rem;
 }
 
+.logo img {
+    width: 28px;
+    height: 28px;
+    display: inline-block;
+    border-radius: 6px;
+}
+
 .logo-dot {
     width: 11px;
     height: 11px;

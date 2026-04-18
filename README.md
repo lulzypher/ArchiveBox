@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="https://archivebox.io/icon.png" height="90" alt="ArchiveTeam NFT logo" />
-  <h1>ArchiveTeam NFT</h1>
+  <img src="website/assets/logo-decentralized-archive-box.svg" height="90" alt="Decentralized Archive Box logo" />
+  <h1>Decentralized Archive Box</h1>
   <p><strong>A decentralized team for preserving the web.</strong></p>
   <p>
     <a href="#quickstart">Quickstart</a> ·
@@ -15,7 +15,7 @@
 
 ## What this project is
 
-ArchiveTeam NFT is a decentralized archiving coordination layer built in the ArchiveBox codebase.
+Decentralized Archive Box is a decentralized archiving coordination layer built in the ArchiveBox codebase.
 
 It enables a network of peers to:
 
@@ -149,15 +149,40 @@ Tests:
 
 ### Prerequisites
 
-- Python 3.11+ recommended
-- Existing repo setup dependencies
+- Python **3.13+** (required by this repo)
+- Git
+- Node.js 22 (recommended to match CI)
+- `uv` package manager (`pip install uv` if missing)
 
-### Install and run tests
+### One-command bootstrap per OS
 
 From repository root:
 
+#### Linux (Ubuntu/Debian)
+
 ```bash
+./bin/bootstrap_linux.sh
 source .venv/bin/activate
+```
+
+#### macOS (Homebrew)
+
+```bash
+./bin/bootstrap_macos.sh
+source .venv/bin/activate
+```
+
+#### Windows (PowerShell)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\bin\bootstrap_windows.ps1
+.\.venv\Scripts\Activate.ps1
+```
+
+### Verify install and run focused tests
+
+```bash
+archivebox version
 pytest -q tests/test_archiveteam_mvp.py tests/test_archiveteam_api.py
 ```
 
@@ -232,6 +257,8 @@ Examples:
 archivebox archiveteam register --username alice --country US
 archivebox archiveteam profile --public-key AT... --bio "node runner"
 archivebox archiveteam request --public-key AT... --url https://example.com --mode FULL_WARC
+archivebox archiveteam request --public-key AT... --url https://youtube.com/watch?v=... --mode MEDIA_YTDLP --download-profile media_fast --video-quality 1080p --max-retries 4
+archivebox archiveteam request --public-key AT... --url https://instagram.com/p/... --mode GALLERY_DL --download-profile gallery_deep --gallery-max-items 250
 archivebox archiveteam claim --public-key AT...
 archivebox archiveteam fulfill --public-key AT... --request-id <id> --content-hash <sha256> --storage-uri ipfs://...
 archivebox archiveteam collection-create --owner-public-key AT... --name "Research"
