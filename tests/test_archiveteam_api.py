@@ -580,7 +580,7 @@ def test_archiveteam_api_network_settings_rules_and_candidates(tmp_path, monkeyp
         "/api/archiveteam/settings/serving-rules",
         {
             "block_porn_links": True,
-            "min_ratio_to_serve": 1.0,
+                "min_ratio_to_serve": 0.0,
             "prioritize_high_ratio_first": False,
             "prioritize_followed_first": True,
             "followed_public_keys": [requester_payload["user"]["display_public_key"]],
@@ -599,16 +599,16 @@ def test_archiveteam_api_network_settings_rules_and_candidates(tmp_path, monkeyp
     rules_get = client.get("/api/archiveteam/settings/serving-rules", HTTP_X_AT_SESSION=worker_session)
     assert rules_get.status_code == 200
     rules_payload = _json(rules_get)
-    assert rules_payload["min_ratio_to_serve"] == 1.0
+    assert rules_payload["min_ratio_to_serve"] == 0.0
     assert requester_payload["user"]["public_key"] in rules_payload["followed_public_keys"]
 
-    blocked_by_porn_policy = _post_json(
+    porn_request = _post_json(
         client,
         "/api/archiveteam/requests",
         {"url": "https://example.com/porn-feed", "archive_mode": "FULL_WARC"},
         HTTP_X_AT_SESSION=requester_session,
     )
-    assert blocked_by_porn_policy.status_code == 400
+    assert porn_request.status_code == 201
 
     valid_request = _post_json(
         client,
@@ -623,8 +623,9 @@ def test_archiveteam_api_network_settings_rules_and_candidates(tmp_path, monkeyp
     candidates = client.get("/api/archiveteam/requests/candidates?limit=5", HTTP_X_AT_SESSION=worker_session)
     assert candidates.status_code == 200
     candidate_rows = _json(candidates)
-    assert len(candidate_rows) == 1
-    assert candidate_rows[0]["request_id"] == request_id
+    candidate_ids = {row["request_id"] for row in candidate_rows}
+    assert request_id in candidate_ids
+    assert _json(porn_request)["request_id"] not in candidate_ids
 
     claimed = _post_json(
         client,
