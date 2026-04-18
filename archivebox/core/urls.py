@@ -7,11 +7,15 @@ from django.conf import settings
 from django.views.generic.base import RedirectView
 
 from core.views import HomepageView, SnapshotView, PublicIndexView, AddView, HealthCheckView
+from core.archiveteam_api import ArchiveTeamAPIView
 
 
 # print('DEBUG', settings.DEBUG)
 
 urlpatterns = [
+    path('api/archiveteam/', ArchiveTeamAPIView.as_view(), {'endpoint': ''}),
+    path('api/archiveteam/<path:endpoint>', ArchiveTeamAPIView.as_view()),
+
     path('public/', PublicIndexView.as_view(), name='public-index'),
 
     path('robots.txt', static.serve, {'document_root': settings.STATICFILES_DIRS[0], 'path': 'robots.txt'}),
